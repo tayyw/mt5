@@ -329,11 +329,57 @@ Your traffic will then go through the VPS. Turn off "Use exit node" when you don
 
 ---
 
-## 10. OpenClaw hardening (if running OpenClaw on this VPS)
+## 10. OpenClaw (install and harden)
 
-If you run [OpenClaw](https://openclaw.ai) on this machine, apply these steps **after** OpenClaw is installed and working. They reduce risk from malicious skills, prompt injection, credential theft, and runaway automation.
+If you run [OpenClaw](https://openclaw.ai) on this machine, install it first (10.0), then apply the hardening steps below. Hardening reduces risk from malicious skills, prompt injection, credential theft, and runaway automation.
 
-**Threats this mitigates:** Malicious ClawHub skills (e.g. credential harvesters), prompt injection via messages, runaway API loops, memory poisoning, and plaintext credentials under `~/.openclaw/`.
+**Threats hardening mitigates:** Malicious ClawHub skills (e.g. credential harvesters), prompt injection via messages, runaway API loops, memory poisoning, and plaintext credentials under `~/.openclaw/`.
+
+---
+
+### 10.0 Install OpenClaw
+
+**Prerequisites (Debian/Ubuntu):** Node.js 22+, Git, and Docker (for the sandbox in 10.2).
+
+```bash
+# Node.js 22 (NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Git and Docker
+sudo apt install -y git
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER   # log out and back in (or newgrp docker) so docker runs without sudo
+```
+
+**Install OpenClaw**
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash
+```
+
+The installer detects Node.js, installs the OpenClaw CLI globally via npm, and may launch the onboarding wizard.
+
+**Verify version (important)**
+
+```bash
+openclaw --version
+```
+
+Use **2026.2.9 or higher**. If you see an older version (e.g. below 2026.1.29), update immediately because of known vulnerabilities:
+
+```bash
+openclaw update
+```
+
+**Check installation health**
+
+```bash
+openclaw doctor
+```
+
+Fix anything it reports before continuing. Then complete the onboarding wizard (`openclaw onboard` if it didn’t start): set gateway bind to `127.0.0.1`, set a strong gateway auth password, and configure your model provider(s) and channels (e.g. Telegram). After OpenClaw is working, proceed to the hardening steps below.
 
 ---
 
