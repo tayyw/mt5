@@ -22,12 +22,12 @@ sudo apt update && sudo apt upgrade -y
 
 ## 2. Firewall
 
-Use a **custom SSH port** from the start (e.g. `2222`). Pick one and use it consistently below.
+Allow **port 22** for now (default SSH) so you can complete sections 3–4. In **section 5** you’ll move SSH to a custom port (e.g. `2222`) and then remove port 22 from the firewall.
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow 2222/tcp
+sudo ufw allow 22/tcp
 sudo ufw enable
 sudo ufw status
 ```
@@ -109,10 +109,12 @@ sudo chmod 600 /home/adminuser/.ssh/authorized_keys
 sudo chown -R adminuser:adminuser /home/adminuser/.ssh
 ```
 
-**4.4 Test login as the new user on the custom port (new terminal; keep current session open)**
+**4.4 Test login as the new user on port 22 (new terminal; keep current session open)**
+
+SSH is still on the default port until section 5.
 
 ```bash
-ssh -p 2222 adminuser@your-server-ip
+ssh -p 22 adminuser@your-server-ip
 sudo whoami   # should print: root
 ```
 
@@ -122,13 +124,25 @@ If that works, use `adminuser` from here on.
 
 ## 5. Harden SSH (port, no root, keys only)
 
-Only do this **after** key-based login works for `adminuser` on port 2222.
+Only do this **after** key-based login works for `adminuser` on **port 22**.
+
+**5.1 Allow the new SSH port in the firewall (do this first)**
+
+So you don’t lock yourself out when sshd switches to 2222:
+
+```bash
+sudo ufw allow 2222/tcp
+sudo ufw reload
+sudo ufw status
+```
+
+**5.2 Change SSH to port 2222 and harden**
 
 ```bash
 sudo nano /etc/ssh/sshd_config
 ```
 
-Set or add (use the same port as in UFW). Comment out or replace any existing `Port` / `PermitRootLogin` / etc.:
+Set or add (use port `2222`). Comment out or replace any existing `Port` / `PermitRootLogin` / etc.:
 
 ```
 Port 2222
@@ -155,7 +169,23 @@ sudo systemctl restart ssh
 # sudo systemctl restart sshd
 ```
 
-Test again in a new terminal: `ssh -p 2222 adminuser@your-server-ip`. Do **not** close your current session until that works.
+**5.3 Test SSH on port 2222, then remove port 22**
+
+In a **new** terminal (from your laptop), test:
+
+```bash
+ssh -p 2222 adminuser@your-server-ip
+```
+
+Do **not** close your current VPS session until that works. Once you’ve confirmed login on 2222, from the VPS remove port 22 from the firewall:
+
+```bash
+sudo ufw delete allow 22/tcp
+sudo ufw reload
+sudo ufw status
+```
+
+From then on, SSH is only on port 2222.
 
 ---
 
