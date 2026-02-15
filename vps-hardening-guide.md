@@ -431,6 +431,11 @@ If you run [OpenClaw](https://openclaw.ai) on this machine, install it first (10
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
+WARN PATH missing npm global bin dir: /home/adminuser/.npm-global/bin
+  This can make openclaw show as "command not found" in new terminals.
+  Fix (zsh: ~/.zshrc, bash: ~/.bashrc):
+    export PATH="/home/adminuser/.npm-global/bin:$PATH"
+
 # Git and Docker
 sudo apt install -y git
 sudo apt install -y docker.io
@@ -450,7 +455,10 @@ The installer detects Node.js, installs the OpenClaw CLI globally via npm, and m
 **Verify version (important)**
 
 ```bash
+ssh -N -L 18789:127.0.0.1:18789 adminuser@100.83.6.5 -p 2222
 openclaw --version
+openclaw gateway install
+openclaw dashboard --no-open
 ```
 
 Use **2026.2.9 or higher**. If you see an older version (e.g. below 2026.1.29), update immediately because of known vulnerabilities:
@@ -466,6 +474,33 @@ openclaw doctor
 ```
 
 Fix anything it reports before continuing. Then complete the onboarding wizard (`openclaw onboard` if it didn’t start): set gateway bind to `127.0.0.1`, set a strong gateway auth password, and configure your model provider(s) and channels (e.g. Telegram). After OpenClaw is working, proceed to the hardening steps below.
+
+**Run the gateway (VPS/Linux)** — Over SSH, `openclaw gateway start` often fails with:
+
+- **"systemd user services unavailable"**, or  
+- **"Gateway service check failed: systemctl --user unavailable: Failed to connect to bus: No medium found"**
+
+That happens because there is no D-Bus user session in a plain SSH login, so `systemctl --user` has no bus to talk to. Two options:
+
+**Option A: Run in foreground under tmux (recommended on VPS)** — No systemd or D-Bus needed. The gateway keeps running after you disconnect.
+
+```bash
+sudo apt install -y tmux
+tmux new -s openclaw
+openclaw gateway run
+# Detach: Ctrl+B then D. Reattach: tmux attach -t openclaw
+```
+
+**Option B: Use systemd user (only if you have a real login session)** — Enable linger so the user’s systemd runs without a logged-in session, then point the shell at the user bus:
+
+```bash
+sudo loginctl enable-linger $USER
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+openclaw gateway start
+```
+
+If you still see "Failed to connect to bus: No medium found", use Option A (tmux + `openclaw gateway run`) instead.
 
 ---
 
@@ -592,6 +627,18 @@ ls -la ~/.openclaw/   # Should show rwx------ / rw-------
 - Telegram: `dmPolicy "pairing"`, `configWrites false`, `groupPolicy "disabled"`.
 
 Access the Control UI over Tailscale (e.g. `http://100.x.x.x:18789/`) so the gateway is never exposed on the public internet.
+
+**Control UI: "Disconnected (1008): device signature expired"** — The browser stores a device credential to talk to the gateway; when it expires, the UI shows this. Fix:
+
+1. **On the VPS:** List devices and optionally rotate or revoke the expired one, then restart the gateway so the UI can re-pair:
+   ```bash
+   openclaw devices list
+   # Optional: openclaw devices rotate --device <id> --role control-ui
+   # Or revoke old device: openclaw devices revoke --device <id> --role control-ui
+   # If gateway is in tmux, restart it (Ctrl+C then openclaw gateway run)
+   ```
+2. **In the browser:** Clear the site’s stored data for the Control UI (e.g. DevTools → Application → Local Storage → clear for `http://127.0.0.1:18789` or your tunnel URL), then reload the page. You may be asked for the gateway password and to approve the device again; on the VPS run `openclaw devices list` and `openclaw devices approve <request-id>` if needed.
+3. **Check clock:** If the VPS time is wrong, signatures can be treated as expired. Sync time: `sudo timedatectl set-ntp true` (or `sudo apt install chrony` and enable it).
 
 ---
 
