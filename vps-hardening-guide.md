@@ -431,11 +431,6 @@ If you run [OpenClaw](https://openclaw.ai) on this machine, install it first (10
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
-WARN PATH missing npm global bin dir: /home/adminuser/.npm-global/bin
-  This can make openclaw show as "command not found" in new terminals.
-  Fix (zsh: ~/.zshrc, bash: ~/.bashrc):
-    export PATH="/home/adminuser/.npm-global/bin:$PATH"
-
 # Git and Docker
 sudo apt install -y git
 sudo apt install -y docker.io
@@ -443,6 +438,8 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 newgrp docker   # apply docker group in this shell so docker runs without sudo (or log out and back in)
 ```
+
+If the Node installer warns that the npm global bin dir is missing from PATH, add it to `~/.bashrc` or `~/.zshrc`: `export PATH="$HOME/.npm-global/bin:$PATH"`, then open a new terminal or run `source ~/.bashrc`.
 
 **Install OpenClaw**
 
@@ -455,10 +452,7 @@ The installer detects Node.js, installs the OpenClaw CLI globally via npm, and m
 **Verify version (important)**
 
 ```bash
-ssh -N -L 18789:127.0.0.1:18789 adminuser@100.83.6.5 -p 2222
 openclaw --version
-openclaw gateway install
-openclaw dashboard --no-open
 ```
 
 Use **2026.2.9 or higher**. If you see an older version (e.g. below 2026.1.29), update immediately because of known vulnerabilities:
@@ -650,4 +644,3 @@ Access the Control UI over Tailscale (e.g. `http://100.x.x.x:18789/`) so the gat
 
 If you suspect compromise: `openclaw gateway stop`, revoke all credentials, inspect session logs under `~/.openclaw/agents/`, then rebuild and rotate everything.
 
-Your traffic will then go through the VPS. Turn off “Use exit node” when you don’t need it.
