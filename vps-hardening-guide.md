@@ -136,7 +136,13 @@ sudo ufw reload
 sudo ufw status
 ```
 
-**5.2 Change SSH to port 2222 and harden**
+**5.2 Back up sshd_config**
+
+```bash
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+```
+
+**5.3 Change SSH to port 2222 and harden**
 
 ```bash
 sudo nano /etc/ssh/sshd_config
@@ -164,12 +170,15 @@ Restart SSH:
 
 ```bash
 # Debian/Ubuntu:
+sudo systemctl daemon-reload
+sudo systemctl restart ssh.socket
 sudo systemctl restart ssh
+
 # CentOS/RHEL/Alma/Rocky:
 # sudo systemctl restart sshd
 ```
 
-**5.3 Test SSH on port 2222, then remove port 22**
+**5.4 Test SSH on port 2222, then remove port 22**
 
 In a **new** terminal (from your laptop), test:
 
@@ -232,15 +241,43 @@ sudo systemctl enable --now dnf-automatic.timer
 
 **7.1 Install and join the tailnet**
 
+**Ubuntu:** APT uses your release **codename** (e.g. `noble` for 24.04), not the version number. Get the codename first, then add the key and repo so the correct signing key is used (avoids NO_PUBKEY from copy-paste issues).
+
+**Step 1 — Get your release codename (Ubuntu):**
+
 ```bash
-# Debian/Ubuntu (see https://tailscale.com/download/linux for other distros)
-curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/$(lsb_release -cs).tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+lsb_release -cs
+```
+
+You should see a single word (e.g. `noble`, `jammy`, `focal`). That is your codename. Optional: see full version info with `lsb_release -a` or `cat /etc/os-release`.
+
+**Step 2 — Add Tailscale key and repo using that codename:**
+
+Replace `CODENAME` in the next block with the output from Step 1 (e.g. `noble`). Or set it in the same shell and run the block as-is:
+
+```bash
+CODENAME=$(lsb_release -cs)
+curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${CODENAME}.gpg" | sudo gpg --dearmor -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu ${CODENAME} main" | sudo tee /etc/apt/sources.list.d/tailscale.list
 sudo apt update && sudo apt install tailscale -y
 sudo tailscale up
 ```
 
 Authenticate in the URL or with your auth key. The machine will get a Tailscale IP (e.g. `100.x.x.x`).
+
+**Other distros:** For Debian, RHEL, etc., see [Tailscale’s Linux install docs](https://tailscale.com/download/linux). Debian also uses codenames (e.g. `bookworm`, `bullseye`); use `lsb_release -cs` there too to get the codename first.
+
+**If you still see a NO_PUBKEY error** after `sudo apt update`, the key or repo may be wrong. Remove the key, then re-add it using your **actual codename** from Step 1:
+
+```bash
+sudo rm -f /usr/share/keyrings/tailscale-archive-keyring.gpg
+# Replace 'noble' with your codename (e.g. jammy, focal) from Step 1
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.gpg | sudo gpg --dearmor -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu noble main" | sudo tee /etc/apt/sources.list.d/tailscale.list
+sudo apt update
+```
+
+Then run `sudo apt install tailscale -y` and `sudo tailscale up`.
 
 **7.2 Confirm Tailscale and get the machine IP**
 
@@ -256,6 +293,24 @@ ssh -p 2222 adminuser@100.x.x.x
 ```
 
 Use the Tailscale IP from `tailscale ip -4`. Once this works, you can lock down public SSH (section 8).
+
+**If you see “UDP GRO forwarding is suboptimally configured”** (e.g. on `enp0s1`), Tailscale is warning that UDP throughput can be improved. This matters most if the machine is an **exit node** or **subnet router** (section 9). Optional fix:
+
+```bash
+# Use the interface that has your default route (often enp0s1 on VPS)
+NETDEV=$(ip -o route get 8.8.8.8 | cut -f 5 -d " ")
+sudo ethtool -K $NETDEV rx-udp-gro-forwarding on rx-gro-list off
+```
+
+Changes are lost after reboot. To make them persistent on systems using `networkd-dispatcher`:
+
+```bash
+printf '#!/bin/sh\n\nethtool -K %s rx-udp-gro-forwarding on rx-gro-list off\n' "$(ip -o route get 8.8.8.8 | cut -f 5 -d " ")" | sudo tee /etc/networkd-dispatcher/routable.d/50-tailscale
+sudo chmod 755 /etc/networkd-dispatcher/routable.d/50-tailscale
+sudo /etc/networkd-dispatcher/routable.d/50-tailscale
+```
+
+Details: [Tailscale: UDP GRO config](https://tailscale.com/s/ethtool-config-udp-gro).
 
 ---
 
@@ -380,7 +435,8 @@ sudo apt install -y nodejs
 sudo apt install -y git
 sudo apt install -y docker.io
 sudo systemctl enable --now docker
-sudo usermod -aG docker $USER   # log out and back in (or newgrp docker) so docker runs without sudo
+sudo usermod -aG docker $USER
+newgrp docker   # apply docker group in this shell so docker runs without sudo (or log out and back in)
 ```
 
 **Install OpenClaw**
