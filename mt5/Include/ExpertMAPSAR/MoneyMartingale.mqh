@@ -211,7 +211,7 @@ public:
       return(true);
      }
 
-   virtual double    CheckOpenLong(const double price,const double sl)
+   virtual double    CheckOpenLong(double price,double sl)
      {
       const double baseLot=BaseLotLong(price);
       if(baseLot<m_symbol.LotsMin())
@@ -230,7 +230,7 @@ public:
       return(Optimize(baseLot));
      }
 
-   virtual double    CheckOpenShort(const double price,const double sl)
+   virtual double    CheckOpenShort(double price,double sl)
      {
       const double baseLot=BaseLotShort(price);
       if(baseLot<m_symbol.LotsMin())
