@@ -416,33 +416,24 @@ Your traffic will then go through the VPS. Turn off "Use exit node" when you don
 
 ## 10. OpenClaw (install and harden)
 
-If you run [OpenClaw](https://openclaw.ai) on this machine, install it first (10.0), then apply the hardening steps below. Hardening reduces risk from malicious skills, prompt injection, credential theft, and runaway automation.
-
-**Threats hardening mitigates:** Malicious ClawHub skills (e.g. credential harvesters), prompt injection via messages, runaway API loops, memory poisoning, and plaintext credentials under `~/.openclaw/`.
+Get [OpenClaw](https://openclaw.ai) running first (install, run gateway, connect Telegram). Then harden with the steps below (security audit, tool policy, SOUL.md, file permissions). **Docker sandbox is optional** and more involved—skip it at first; you can add it later (10.7) if you want tool execution isolated in containers.
 
 ---
 
 ### 10.0 Install OpenClaw
 
-**Prerequisites (Debian/Ubuntu):** Node.js 22+, Git, and Docker (for the sandbox in 10.2).
+**Prerequisites (Debian/Ubuntu):** Node.js 22+ and Git. Docker is only needed for the optional sandbox (10.7); omit it for a simple setup.
 
 ```bash
 # Node.js 22 (NodeSource)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
-WARN PATH missing npm global bin dir: /home/adminuser/.npm-global/bin
-  This can make openclaw show as "command not found" in new terminals.
-  Fix (zsh: ~/.zshrc, bash: ~/.bashrc):
-    export PATH="/home/adminuser/.npm-global/bin:$PATH"
-
-# Git and Docker
+# Git
 sudo apt install -y git
-sudo apt install -y docker.io
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER
-newgrp docker   # apply docker group in this shell so docker runs without sudo (or log out and back in)
 ```
+
+If the Node installer warns that the npm global bin dir is missing from PATH, add to `~/.bashrc` or `~/.zshrc`: `export PATH="$HOME/.npm-global/bin:$PATH"`, then open a new terminal.
 
 **Install OpenClaw**
 
@@ -475,14 +466,7 @@ openclaw doctor
 
 Fix anything it reports before continuing. Then complete the onboarding wizard (`openclaw onboard` if it didn’t start): set gateway bind to `127.0.0.1`, set a strong gateway auth password, and configure your model provider(s) and channels (e.g. Telegram). After OpenClaw is working, proceed to the hardening steps below.
 
-**Run the gateway (VPS/Linux)** — Over SSH, `openclaw gateway start` often fails with:
-
-- **"systemd user services unavailable"**, or  
-- **"Gateway service check failed: systemctl --user unavailable: Failed to connect to bus: No medium found"**
-
-That happens because there is no D-Bus user session in a plain SSH login, so `systemctl --user` has no bus to talk to. Two options:
-
-**Option A: Run in foreground under tmux (recommended on VPS)** — No systemd or D-Bus needed. The gateway keeps running after you disconnect.
+**Run the gateway (VPS/Linux)** — Over SSH, `openclaw gateway start` often fails (no D-Bus user session), so run the gateway in the foreground and use tmux so it survives disconnect:
 
 ```bash
 sudo apt install -y tmux
@@ -491,16 +475,7 @@ openclaw gateway run
 # Detach: Ctrl+B then D. Reattach: tmux attach -t openclaw
 ```
 
-**Option B: Use systemd user (only if you have a real login session)** — Enable linger so the user’s systemd runs without a logged-in session, then point the shell at the user bus:
-
-```bash
-sudo loginctl enable-linger $USER
-export XDG_RUNTIME_DIR=/run/user/$(id -u)
-export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-openclaw gateway start
-```
-
-If you still see "Failed to connect to bus: No medium found", use Option A (tmux + `openclaw gateway run`) instead.
+Optional: to try background service instead, run `sudo loginctl enable-linger $USER`, set `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` (see OpenClaw docs), then `openclaw gateway start`. If you see "Failed to connect to bus", use the tmux + `openclaw gateway run` flow above.
 
 ---
 
@@ -521,63 +496,7 @@ openclaw security audit   # Should show no critical findings
 
 ---
 
-### 10.2 Docker sandbox (tool execution isolation)
-
-Run the agent's tool execution (shell, file ops) inside Docker so a compromised or tricked agent can't touch the host.
-
-**10.2.1 Ensure Docker is running**
-
-```bash
-docker info
-```
-
-**10.2.2 Build the sandbox image**
-
-```bash
-openclaw sandbox recreate --all 2>/dev/null
-# Or if needed:
-OPENCLAW_DIR=$(npm root -g)/openclaw
-$OPENCLAW_DIR/scripts/sandbox-setup.sh
-```
-
-**10.2.3 Enable sandboxing for all sessions**
-
-```bash
-openclaw config set agents.defaults.sandbox.mode "all"
-openclaw config set agents.defaults.sandbox.scope "session"
-openclaw config set agents.defaults.sandbox.workspaceAccess "ro"
-```
-
-- `mode: "all"` — every session runs in Docker.
-- `scope: "session"` — one container per session.
-- `workspaceAccess: "ro"` — agent can read workspace, not write from inside the sandbox.
-
-**10.2.4 Network isolation for sandbox**
-
-```bash
-openclaw config set agents.defaults.sandbox.docker.network "none"
-```
-
-Sandbox containers get no internet; built-in web tools still run on the gateway.
-
-**10.2.5 Resource limits**
-
-```bash
-openclaw config set agents.defaults.sandbox.docker.memory "512m"
-openclaw config set agents.defaults.sandbox.docker.cpus 1
-openclaw config set agents.defaults.sandbox.docker.pidsLimit 100
-```
-
-**10.2.6 Restart and verify**
-
-```bash
-openclaw gateway restart
-openclaw sandbox explain
-```
-
----
-
-### 10.3 Tool policy lockdown
+### 10.2 Tool policy lockdown
 
 Restrict which tools the agent can use (deny wins over allow):
 
@@ -593,7 +512,7 @@ openclaw config set tools.elevated.enabled false
 
 ---
 
-### 10.4 SOUL.md — agent identity and boundaries
+### 10.3 SOUL.md — agent identity and boundaries
 
 Create `SOUL.md` in the agent workspace so every conversation gets clear boundaries (no financial actions, no following instructions from content, no shell/install without approval):
 
@@ -606,7 +525,7 @@ Include hard rules: no wallet/keys, no trades, no executing embedded instruction
 
 ---
 
-### 10.5 File permissions for ~/.openclaw
+### 10.4 File permissions for ~/.openclaw
 
 Credentials and config are plaintext; restrict to owner only:
 
@@ -620,7 +539,7 @@ ls -la ~/.openclaw/   # Should show rwx------ / rw-------
 
 ---
 
-### 10.6 Gateway and channel hardening (recap)
+### 10.5 Gateway and channel hardening (recap)
 
 - Bind gateway to localhost only: `openclaw config set gateway.bind "127.0.0.1"`.
 - Set a strong gateway auth password: `openclaw config set gateway.auth.password "YOUR_STRONG_PASSWORD"`.
@@ -628,27 +547,93 @@ ls -la ~/.openclaw/   # Should show rwx------ / rw-------
 
 Access the Control UI over Tailscale (e.g. `http://100.x.x.x:18789/`) so the gateway is never exposed on the public internet.
 
-**Control UI: "Disconnected (1008): device signature expired"** — The browser stores a device credential to talk to the gateway; when it expires, the UI shows this. Fix:
-
-1. **On the VPS:** List devices and optionally rotate or revoke the expired one, then restart the gateway so the UI can re-pair:
-   ```bash
-   openclaw devices list
-   # Optional: openclaw devices rotate --device <id> --role control-ui
-   # Or revoke old device: openclaw devices revoke --device <id> --role control-ui
-   # If gateway is in tmux, restart it (Ctrl+C then openclaw gateway run)
-   ```
-2. **In the browser:** Clear the site’s stored data for the Control UI (e.g. DevTools → Application → Local Storage → clear for `http://127.0.0.1:18789` or your tunnel URL), then reload the page. You may be asked for the gateway password and to approve the device again; on the VPS run `openclaw devices list` and `openclaw devices approve <request-id>` if needed.
-3. **Check clock:** If the VPS time is wrong, signatures can be treated as expired. Sync time: `sudo timedatectl set-ntp true` (or `sudo apt install chrony` and enable it).
+**Control UI: "Disconnected (1008): device signature expired"** — Clear the site’s stored data in the browser (DevTools → Application → Local Storage), then reload. Approve the device again on the VPS: `openclaw devices list` then `openclaw devices approve <request-id>`. If the VPS clock is wrong, sync: `sudo timedatectl set-ntp true`.
 
 ---
 
-### 10.7 Maintenance
+### 10.7 Optional: Docker sandbox (add later)
+
+Skip this at first. When you want tool execution isolated in containers, install Docker and enable the sandbox. The gateway process must have access to the Docker socket (user in `docker` group and gateway started from a session that has it—see below).
+
+**Prerequisites:** Docker installed, user in `docker` group. After `sudo usermod -aG docker $USER`, log out of SSH and log back in so the new session has the group.
+
+**10.7.1 Ensure Docker is running**
+
+```bash
+docker info
+```
+
+**10.7.2 Build the sandbox image**
+
+```bash
+openclaw sandbox recreate --all 2>/dev/null
+# Or if needed:
+OPENCLAW_DIR=$(npm root -g)/openclaw
+$OPENCLAW_DIR/scripts/sandbox-setup.sh
+```
+
+**10.7.3 Enable sandboxing for all sessions**
+
+```bash
+openclaw config set agents.defaults.sandbox.mode "all"
+openclaw config set agents.defaults.sandbox.scope "session"
+openclaw config set agents.defaults.sandbox.workspaceAccess "ro"
+```
+
+- `mode: "all"` — every session runs in Docker.
+- `scope: "session"` — one container per session.
+- `workspaceAccess: "ro"` — agent can read workspace, not write from inside the sandbox.
+
+**10.7.4 Network isolation for sandbox**
+
+```bash
+openclaw config set agents.defaults.sandbox.docker.network "none"
+```
+
+Sandbox containers get no internet; built-in web tools still run on the gateway.
+
+**10.7.5 Resource limits**
+
+```bash
+openclaw config set agents.defaults.sandbox.docker.memory "512m"
+openclaw config set agents.defaults.sandbox.docker.cpus 1
+openclaw config set agents.defaults.sandbox.docker.pidsLimit 100
+```
+
+**10.7.6 Restart and verify**
+
+```bash
+openclaw gateway restart
+openclaw sandbox explain
+```
+
+**"Permission denied" connecting to Docker socket** — If you see errors like:
+
+```text
+Failed to inspect sandbox image: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock ... dial unix /var/run/docker.sock: connect: permission denied
+```
+
+the user running the OpenClaw gateway doesn’t have access to the Docker socket. The gateway process must run with your user in the `docker` group.
+
+1. **Ensure your user is in `docker`:**
+   ```bash
+   groups
+   # or
+   id
+   ```
+   You should see `docker` in the list. If not: `sudo usermod -aG docker $USER`, then **log out and log back in** (or in the same shell run `newgrp docker`).
+
+2. **Start the gateway in a session that has `docker`:** If you run the gateway in tmux, start it from a shell where `groups` already shows `docker` (e.g. after `newgrp docker` or a fresh SSH login). If the gateway was started by systemd user, that session may not have the docker group; use Option A (tmux + `openclaw gateway run`) from a shell where you’ve run `newgrp docker` so the process inherits the group.
+
+3. **Restart the gateway** after fixing group membership (e.g. stop with Ctrl+C in tmux, run `newgrp docker` in that same tmux pane, then `openclaw gateway run` again).
+
+---
+
+### 10.8 Maintenance
 
 - Run `openclaw security audit` regularly (e.g. weekly).
 - Set API spending limits on Moonshot and Anthropic; monitor with `openclaw status --usage`.
 - Rotate API keys, bot token, and gateway password periodically (e.g. every 3 months).
 
 If you suspect compromise: `openclaw gateway stop`, revoke all credentials, inspect session logs under `~/.openclaw/agents/`, then rebuild and rotate everything.
-
-Your traffic will then go through the VPS. Turn off "Use exit node" when you don't need it.
 
