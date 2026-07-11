@@ -4,8 +4,8 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.18"
-#property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
+#property version   "1.19"
+#property description "MA+PSAR tuned + martingale stack, group exit, shock protection"
 
 #include <Expert\Signal\SignalITF.mqh>
 #include <Expert\Signal\SignalRSI.mqh>
@@ -15,6 +15,8 @@
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
 #include <ExpertMAPSAR\MartingaleBasket.mqh>
 #include <ExpertMAPSAR\SignalSpread.mqh>
+#include <ExpertMAPSAR\ShockGuard.mqh>
+#include <ExpertMAPSAR\SignalShockGuard.mqh>
 
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
@@ -79,6 +81,16 @@ input bool               Inp_MG_AllowStack             =true;
 input int                Inp_MG_StackMaxLegs           =4;
 input int                Inp_MG_StackStepPoints        =120;
 
+input group "=== Shock protection ==="
+input bool               Inp_UseShockGuard             =true;
+input int                Inp_Shock_ATR_Period          =14;
+input double             Inp_Shock_ATR_SpikeMult        =1.85;
+input double             Inp_Shock_SpreadATRMult       =0.15;
+input int                Inp_Shock_CooldownBars         =60;
+input double             Inp_MG_MaxBasketLossPct       =3.0;
+input double             Inp_MG_MaxBasketLossMoney      =0.0;
+input double             Inp_MG_MaxTotalFloatLossPct    =5.0;
+
 //+------------------------------------------------------------------+
 //| Globals                                                          |
 //+------------------------------------------------------------------+
@@ -86,6 +98,7 @@ int                 Expert_MagicNumber =27894;
 CExpertMAPSAR       ExtExpert;
 CMartingaleBasket   g_mgBasket;
 CMoneyMartingale   *g_money           =NULL;
+CShockGuard         g_shockGuard;
 
 //+------------------------------------------------------------------+
 int OnInit(void)
@@ -218,6 +231,28 @@ int OnInit(void)
         }
      }
 
+   if(!g_shockGuard.Init(Symbol(),Period(),Inp_UseShockGuard,Inp_Shock_ATR_Period,
+                         Inp_Shock_ATR_SpikeMult,Inp_Shock_SpreadATRMult,Inp_Shock_CooldownBars))
+     {
+      printf(__FUNCTION__+": error initializing shock guard");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+
+   if(Inp_UseShockGuard)
+     {
+      CSignalShockGuard *shockFilter=new CSignalShockGuard;
+      if(shockFilter==NULL)
+        {
+         printf(__FUNCTION__+": error creating shock filter");
+         ExtExpert.Deinit();
+         return(INIT_FAILED);
+        }
+      shockFilter.SetGuard(GetPointer(g_shockGuard));
+      signal.AddFilter(shockFilter);
+      shockFilter.Weight(1.0);
+     }
+
    CTrailingPSAR *trailing=new CTrailingPSAR;
    if(trailing==NULL)
      {
@@ -270,6 +305,9 @@ int OnInit(void)
                    Inp_UseMartingale && Inp_MG_GroupClose,
                    Inp_UseMartingale && Inp_MG_AllowStack,
                    Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints);
+   g_mgBasket.SetShockGuard(GetPointer(g_shockGuard));
+   g_mgBasket.SetLossCaps(Inp_MG_MaxBasketLossPct,Inp_MG_MaxBasketLossMoney,
+                          Inp_MG_MaxTotalFloatLossPct);
 
    if(!g_money.ValidationSettings())
      {
@@ -303,7 +341,9 @@ int OnInit(void)
          (Inp_InverseSignals ? " | INVERSE ON" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
-         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
+         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""),
+         (Inp_UseShockGuard ? StringFormat(" | shock ATRx%.2f basketLoss=%.1f%%",
+                                            Inp_Shock_ATR_SpikeMult,Inp_MG_MaxBasketLossPct) : ""));
    return(INIT_SUCCEEDED);
   }
 
@@ -316,6 +356,9 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick(void)
   {
+   if(Inp_UseShockGuard)
+      g_shockGuard.Update();
+
    if(Inp_UseMartingale)
       g_mgBasket.Update();
 

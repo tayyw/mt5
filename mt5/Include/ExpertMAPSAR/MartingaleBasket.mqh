@@ -7,6 +7,7 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
+#include <ExpertMAPSAR\ShockGuard.mqh>
 
 class CMartingaleBasket
   {
@@ -16,12 +17,16 @@ private:
    double             m_min_group_profit;
    int                m_stack_max_legs;
    int                m_stack_step_points;
+   double             m_max_basket_loss_pct;
+   double             m_max_basket_loss_money;
+   double             m_max_total_float_loss_pct;
    ENUM_TIMEFRAMES    m_period;
    string             m_symbol;
    ulong              m_magic;
    datetime           m_last_stack_bar_buy;
    datetime           m_last_stack_bar_sell;
    CMoneyMartingale  *m_money;
+   CShockGuard       *m_shock_guard;
 
    ENUM_ORDER_TYPE_FILLING FillingMode(void) const
      {
@@ -79,6 +84,11 @@ private:
       return(pnl);
      }
 
+   double            TotalFloatingPnL(void) const
+     {
+      return(SideFloatingPnL(true)+SideFloatingPnL(false));
+     }
+
    double            SideCycleNetPnL(const bool isBuy) const
      {
       if(m_money==NULL)
@@ -91,6 +101,37 @@ private:
       if(m_money!=NULL && m_money.LossStreak(isBuy)>0)
          return(true);
       return(SidePositionCount(isBuy)>1);
+     }
+
+   bool              BasketLossLimitExceeded(const double floatingPnL) const
+     {
+      if(floatingPnL>=0.0)
+         return(false);
+
+      const double loss=-floatingPnL;
+      const double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+
+      if(m_max_basket_loss_pct>0.0 && loss>=balance*m_max_basket_loss_pct/100.0)
+         return(true);
+
+      if(m_max_basket_loss_money>0.0 && loss>=m_max_basket_loss_money)
+         return(true);
+
+      return(false);
+     }
+
+   bool              TotalFloatLossLimitExceeded(void) const
+     {
+      if(m_max_total_float_loss_pct<=0.0)
+         return(false);
+
+      const double totalFloat=TotalFloatingPnL();
+      if(totalFloat>=0.0)
+         return(false);
+
+      const double loss=-totalFloat;
+      const double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+      return(loss>=balance*m_max_total_float_loss_pct/100.0);
      }
 
    bool              GetLatestLeg(const bool isBuy,datetime &openTime,double &openPrice) const
@@ -154,9 +195,18 @@ private:
       return(ok);
      }
 
+   void              CloseAllBaskets(void)
+     {
+      CloseSideBasket(true);
+      CloseSideBasket(false);
+     }
+
    void              TryStackAddSide(const bool isBuy)
      {
       if(!m_allow_stack || m_money==NULL || !m_money.IsMartingaleEnabled())
+         return;
+
+      if(m_shock_guard!=NULL && m_shock_guard.IsTradingBlocked())
          return;
 
       const int posCount=SidePositionCount(isBuy);
@@ -231,6 +281,18 @@ private:
       if(posCount<=0)
          return;
 
+      const double sideFloat=SideFloatingPnL(isBuy);
+      if(BasketLossLimitExceeded(sideFloat))
+        {
+         Print("ShockGuard EMERGENCY CLOSE ",(isBuy?"LONG":"SHORT"),
+               " legs=",posCount,
+               " floating=",DoubleToString(sideFloat,2));
+         CloseSideBasket(isBuy);
+         if(m_shock_guard!=NULL)
+            m_shock_guard.ArmCooldown();
+         return;
+        }
+
       if(m_use_group_close && SideInMartingaleGroup(isBuy))
         {
          const double cycleNet=SideCycleNetPnL(isBuy);
@@ -255,12 +317,16 @@ public:
                                                m_min_group_profit(0.0),
                                                m_stack_max_legs(4),
                                                m_stack_step_points(120),
+                                               m_max_basket_loss_pct(0.0),
+                                               m_max_basket_loss_money(0.0),
+                                               m_max_total_float_loss_pct(0.0),
                                                m_period(PERIOD_CURRENT),
                                                m_symbol(""),
                                                m_magic(0),
                                                m_last_stack_bar_buy(0),
                                                m_last_stack_bar_sell(0),
-                                               m_money(NULL) {}
+                                               m_money(NULL),
+                                               m_shock_guard(NULL) {}
 
    void              Init(const string symbol,const ulong magic,const ENUM_TIMEFRAMES period,
                           CMoneyMartingale *money,const bool useGroupClose,const bool allowStack,
@@ -280,8 +346,27 @@ public:
       m_last_stack_bar_sell=0;
      }
 
+   void              SetShockGuard(CShockGuard *guard) { m_shock_guard=guard; }
+
+   void              SetLossCaps(const double maxBasketLossPct,const double maxBasketLossMoney,
+                                 const double maxTotalFloatLossPct)
+     {
+      m_max_basket_loss_pct      =MathMax(0.0,maxBasketLossPct);
+      m_max_basket_loss_money    =MathMax(0.0,maxBasketLossMoney);
+      m_max_total_float_loss_pct =MathMax(0.0,maxTotalFloatLossPct);
+     }
+
    void              Update(void)
      {
+      if(TotalFloatLossLimitExceeded())
+        {
+         Print("ShockGuard TOTAL EMERGENCY CLOSE floating=",DoubleToString(TotalFloatingPnL(),2));
+         CloseAllBaskets();
+         if(m_shock_guard!=NULL)
+            m_shock_guard.ArmCooldown();
+         return;
+        }
+
       UpdateSide(true);
       UpdateSide(false);
      }
