@@ -7,6 +7,7 @@
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
+#include <ExpertMAPSAR\ATRSpikeGuard.mqh>
 
 class CMartingaleBasket
   {
@@ -22,6 +23,7 @@ private:
    datetime           m_last_stack_bar_buy;
    datetime           m_last_stack_bar_sell;
    CMoneyMartingale  *m_money;
+   CATRSpikeGuard   *m_atr_guard;
 
    ENUM_ORDER_TYPE_FILLING FillingMode(void) const
      {
@@ -159,6 +161,9 @@ private:
       if(!m_allow_stack || m_money==NULL || !m_money.IsMartingaleEnabled())
          return;
 
+      if(m_atr_guard!=NULL && m_atr_guard.IsSpikeActive())
+         return;
+
       const int posCount=SidePositionCount(isBuy);
       if(posCount<=0 || posCount>=m_stack_max_legs)
          return;
@@ -260,7 +265,8 @@ public:
                                                m_magic(0),
                                                m_last_stack_bar_buy(0),
                                                m_last_stack_bar_sell(0),
-                                               m_money(NULL) {}
+                                               m_money(NULL),
+                                               m_atr_guard(NULL) {}
 
    void              Init(const string symbol,const ulong magic,const ENUM_TIMEFRAMES period,
                           CMoneyMartingale *money,const bool useGroupClose,const bool allowStack,
@@ -279,6 +285,8 @@ public:
       m_last_stack_bar_buy=0;
       m_last_stack_bar_sell=0;
      }
+
+   void              SetATRSpikeGuard(CATRSpikeGuard *guard) { m_atr_guard=guard; }
 
    void              Update(void)
      {

@@ -4,8 +4,8 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.18"
-#property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
+#property version   "1.21"
+#property description "MA+PSAR tuned + martingale stack, ATR spike filter"
 
 #include <Expert\Signal\SignalITF.mqh>
 #include <Expert\Signal\SignalRSI.mqh>
@@ -15,6 +15,8 @@
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
 #include <ExpertMAPSAR\MartingaleBasket.mqh>
 #include <ExpertMAPSAR\SignalSpread.mqh>
+#include <ExpertMAPSAR\ATRSpikeGuard.mqh>
+#include <ExpertMAPSAR\SignalATRSpike.mqh>
 
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
@@ -79,6 +81,11 @@ input bool               Inp_MG_AllowStack             =true;
 input int                Inp_MG_StackMaxLegs           =4;
 input int                Inp_MG_StackStepPoints        =120;
 
+input group "=== ATR spike filter ==="
+input bool               Inp_UseATRSpikeFilter         =true;
+input int                Inp_ATRSpike_Period           =14;
+input double             Inp_ATRSpike_Mult             =1.85;
+
 //+------------------------------------------------------------------+
 //| Globals                                                          |
 //+------------------------------------------------------------------+
@@ -86,6 +93,7 @@ int                 Expert_MagicNumber =27894;
 CExpertMAPSAR       ExtExpert;
 CMartingaleBasket   g_mgBasket;
 CMoneyMartingale   *g_money           =NULL;
+CATRSpikeGuard      g_atrSpikeGuard;
 
 //+------------------------------------------------------------------+
 int OnInit(void)
@@ -218,6 +226,28 @@ int OnInit(void)
         }
      }
 
+   if(!g_atrSpikeGuard.Init(Symbol(),Period(),Inp_UseATRSpikeFilter,
+                            Inp_ATRSpike_Period,Inp_ATRSpike_Mult))
+     {
+      printf(__FUNCTION__+": error initializing ATR spike guard");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+
+   if(Inp_UseATRSpikeFilter)
+     {
+      CSignalATRSpike *atrSpike=new CSignalATRSpike;
+      if(atrSpike==NULL)
+        {
+         printf(__FUNCTION__+": error creating ATR spike filter");
+         ExtExpert.Deinit();
+         return(INIT_FAILED);
+        }
+      atrSpike.SetGuard(GetPointer(g_atrSpikeGuard));
+      signal.AddFilter(atrSpike);
+      atrSpike.Weight(1.0);
+     }
+
    CTrailingPSAR *trailing=new CTrailingPSAR;
    if(trailing==NULL)
      {
@@ -270,6 +300,7 @@ int OnInit(void)
                    Inp_UseMartingale && Inp_MG_GroupClose,
                    Inp_UseMartingale && Inp_MG_AllowStack,
                    Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints);
+   g_mgBasket.SetATRSpikeGuard(GetPointer(g_atrSpikeGuard));
 
    if(!g_money.ValidationSettings())
      {
@@ -303,7 +334,8 @@ int OnInit(void)
          (Inp_InverseSignals ? " | INVERSE ON" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
-         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
+         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""),
+         (Inp_UseATRSpikeFilter ? StringFormat(" | ATR spike x%.2f",Inp_ATRSpike_Mult) : ""));
    return(INIT_SUCCEEDED);
   }
 
@@ -316,6 +348,9 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick(void)
   {
+   if(Inp_UseATRSpikeFilter)
+      g_atrSpikeGuard.Update();
+
    if(Inp_UseMartingale)
       g_mgBasket.Update();
 
