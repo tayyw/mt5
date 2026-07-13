@@ -4,8 +4,8 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.18"
-#property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
+#property version   "1.24"
+#property description "MA+PSAR + leg1 floor/ratchet TP, martingale stack, hedging"
 
 #include <Expert\Signal\SignalITF.mqh>
 #include <Expert\Signal\SignalRSI.mqh>
@@ -15,6 +15,7 @@
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
 #include <ExpertMAPSAR\MartingaleBasket.mqh>
 #include <ExpertMAPSAR\SignalSpread.mqh>
+#include <ExpertMAPSAR\Leg1TakeProfit.mqh>
 
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
@@ -22,62 +23,69 @@
 input group "=== Expert ==="
 input string             Inp_Expert_Title           ="ExpertMAPSARTuned";
 input bool               Inp_EveryTick              =true;
-input int                Inp_ThresholdOpen           =14;
-input int                Inp_ThresholdOpenShort      =10;
+input int                Inp_ThresholdOpen           =16;
+input int                Inp_ThresholdOpenShort      =12;
 input int                Inp_ThresholdClose          =88;
 
 input group "=== Direction & hedging ==="
 input bool               Inp_AllowLong              =true;
 input bool               Inp_AllowShort             =true;
-input bool               Inp_AllowHedging           =false;
+input bool               Inp_AllowHedging           =true;
 input bool               Inp_InverseSignals         =false;
 
-input group "=== Signal MA (M1 entry) ==="
-input int                Inp_Signal_MA_Period        =10;
-input int                Inp_Signal_MA_Shift         =3;
+input group "=== Signal MA (entry) ==="
+input int                Inp_Signal_MA_Period        =14;
+input int                Inp_Signal_MA_Shift         =2;
 input ENUM_MA_METHOD     Inp_Signal_MA_Method        =MODE_EMA;
 input ENUM_APPLIED_PRICE Inp_Signal_MA_Applied       =PRICE_CLOSE;
-input int                Inp_Pattern_Cross           =90;
-input int                Inp_Pattern_Pierce          =75;
-input int                Inp_Pattern_Position        =25;
+input int                Inp_Pattern_Cross           =85;
+input int                Inp_Pattern_Pierce          =65;
+input int                Inp_Pattern_Position        =20;
 
-input group "=== HTF trend filter (M15) ==="
+input group "=== HTF trend filter ==="
 input bool               Inp_UseHTFFilter            =true;
-input ENUM_TIMEFRAMES    Inp_HTF_Period              =PERIOD_M15;
+input ENUM_TIMEFRAMES    Inp_HTF_Period              =PERIOD_H1;
 input int                Inp_HTF_MA_Period           =50;
-input double             Inp_HTF_Filter_Weight       =0.30;
+input double             Inp_HTF_Filter_Weight       =0.35;
 
 input group "=== Session & spread ==="
 input bool               Inp_UseSessionFilter        =true;
 input int                Inp_SessionStartHour        =7;
 input int                Inp_SessionEndHour            =20;
 input bool               Inp_UseSpreadFilter         =true;
-input int                Inp_MaxSpreadPoints         =18;
+input int                Inp_MaxSpreadPoints         =22;
 
 input group "=== RSI momentum filter ==="
 input bool               Inp_UseRSIFilter            =true;
 input int                Inp_RSI_Period                =14;
-input double             Inp_RSI_Filter_Weight       =0.25;
+input double             Inp_RSI_Filter_Weight       =0.30;
 
 input group "=== Trailing PSAR ==="
-input double             Inp_Trailing_ParabolicSAR_Step    =0.014;
-input double             Inp_Trailing_ParabolicSAR_Maximum =0.18;
+input double             Inp_Trailing_ParabolicSAR_Step    =0.02;
+input double             Inp_Trailing_ParabolicSAR_Maximum =0.20;
+
+input group "=== Leg-1 take profit ==="
+input bool               Inp_UseLeg1TP                 =true;
+input int                Inp_Leg1TP_ATR_Period         =20;
+input double             Inp_Leg1TP_MinATR             =1.0;
+input double             Inp_Leg1TP_TrailATR           =2.0;
+input int                Inp_Leg1TP_MinPoints          =50;
 
 input group "=== Money ==="
 input double             Inp_Money_DecreaseFactor      =2.5;
-input double             Inp_Money_Percent             =4.0;
+input double             Inp_Money_Percent             =3.0;
 input double             Inp_LotScale                  =1.0;
 input double             Inp_MaxLotCap                 =0.0;
 
 input group "=== Martingale ==="
 input bool               Inp_UseMartingale             =true;
-input double             Inp_MartingaleMult            =1.5;
-input int                Inp_MartingaleMaxSteps        =3;
+input double             Inp_MartingaleMult            =1.4;
+input int                Inp_MartingaleMaxSteps        =2;
 input bool               Inp_MG_GroupClose             =true;
 input double             Inp_MG_GroupMinProfit         =0.0;
 input bool               Inp_MG_AllowStack             =true;
-input int                Inp_MG_StackMaxLegs           =4;
-input int                Inp_MG_StackStepPoints        =120;
+input int                Inp_MG_StackMaxLegs           =3;
+input int                Inp_MG_StackStepPoints        =180;
 
 //+------------------------------------------------------------------+
 //| Globals                                                          |
@@ -86,6 +94,7 @@ int                 Expert_MagicNumber =27894;
 CExpertMAPSAR       ExtExpert;
 CMartingaleBasket   g_mgBasket;
 CMoneyMartingale   *g_money           =NULL;
+CLeg1TakeProfit     g_leg1Tp;
 
 //+------------------------------------------------------------------+
 int OnInit(void)
@@ -285,6 +294,15 @@ int OnInit(void)
       return(INIT_FAILED);
      }
 
+   if(!g_leg1Tp.Init(Symbol(),Expert_MagicNumber,Period(),
+                     Inp_UseLeg1TP,Inp_Leg1TP_ATR_Period,
+                     Inp_Leg1TP_MinATR,Inp_Leg1TP_TrailATR,Inp_Leg1TP_MinPoints))
+     {
+      printf(__FUNCTION__+": error initializing leg-1 TP");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+
    const long tradeMode=SymbolInfoInteger(Symbol(),SYMBOL_TRADE_MODE);
    if(Inp_AllowShort && tradeMode==SYMBOL_TRADE_MODE_LONGONLY)
       Print("WARN: Symbol is LONGONLY — shorts will fail.");
@@ -303,13 +321,16 @@ int OnInit(void)
          (Inp_InverseSignals ? " | INVERSE ON" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
-         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
+         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""),
+         (Inp_UseLeg1TP ? StringFormat(" | leg1TP min=%.2f trail=%.2fATR",
+                                        Inp_Leg1TP_MinATR,Inp_Leg1TP_TrailATR) : ""));
    return(INIT_SUCCEEDED);
   }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   g_leg1Tp.Deinit();
    ExtExpert.Deinit();
   }
 
@@ -321,6 +342,8 @@ void OnTick(void)
 
    ExtExpert.OnTick();
 
+   g_leg1Tp.OnTick();
+
    if(Inp_UseMartingale)
       g_mgBasket.Update();
   }
@@ -329,6 +352,7 @@ void OnTick(void)
 void OnTrade(void)
   {
    ExtExpert.OnTrade();
+   g_leg1Tp.OnTick();
   }
 
 //+------------------------------------------------------------------+
