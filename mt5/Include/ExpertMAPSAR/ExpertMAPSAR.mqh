@@ -15,6 +15,7 @@ private:
    bool     m_allow_hedging;
    bool     m_inverse;
    bool     m_mg_group_exits;   // martingale basket owns exits (skip signal close)
+   bool     m_no_new_entries;   // block signal entries; MG stack/exits still run
    ulong    m_magic_number;
 
    bool     HasSidePosition(const bool isBuy) const
@@ -137,6 +138,7 @@ public:
                                            m_allow_hedging(false),
                                            m_inverse(false),
                                            m_mg_group_exits(false),
+                                           m_no_new_entries(false),
                                            m_magic_number(0) {}
 
    void              Configure(const bool allowLong,const bool allowShort,const ulong magic)
@@ -151,7 +153,9 @@ public:
    void              AllowHedging(const bool value)  { m_allow_hedging=value; }
    void              InverseSignals(const bool value){ m_inverse=value; }
    void              MartingaleGroupExits(const bool value){ m_mg_group_exits=value; }
+   void              NoNewEntries(const bool value)  { m_no_new_entries=value; }
    bool              AllowHedging(void) const        { return(m_allow_hedging); }
+   bool              NoNewEntries(void) const        { return(m_no_new_entries); }
 
    // When MG group-close is on, skip signal exits so a side can stack to
    // StackMaxLegs and leave via basket recovery. Money emergency close still runs.
@@ -237,6 +241,10 @@ public:
 
    virtual bool      CheckOpen(void)
      {
+      // Signal / inverse first legs only — MartingaleBasket stacks still run in OnTick.
+      if(m_no_new_entries)
+         return(false);
+
       bool opened=false;
 
       if(CheckOpenLong())
@@ -249,7 +257,7 @@ public:
 
    virtual bool      CheckReverse(void)
      {
-      if(m_inverse || m_allow_hedging)
+      if(m_no_new_entries || m_inverse || m_allow_hedging)
          return(false);
       if(m_allow_long && m_allow_short)
          return(CExpert::CheckReverse());

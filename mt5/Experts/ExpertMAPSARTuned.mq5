@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.21"
+#property version   "1.22"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -31,6 +31,7 @@ input bool               Inp_AllowLong              =true;
 input bool               Inp_AllowShort             =true;
 input bool               Inp_AllowHedging           =false;
 input bool               Inp_InverseSignals         =false;
+input bool               Inp_NoNewEntries           =false; // Block new signal entries; MG stack/exit only
 
 input group "=== Signal MA (M1 entry) ==="
 input int                Inp_Signal_MA_Period        =10;
@@ -100,6 +101,7 @@ int OnInit(void)
    ExtExpert.InverseSignals(Inp_InverseSignals);
    ExtExpert.AllowHedging(Inp_AllowHedging);
    ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
+   ExtExpert.NoNewEntries(Inp_NoNewEntries);
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
      {
@@ -302,6 +304,7 @@ int OnInit(void)
          " | L=",Inp_AllowLong," S=",Inp_AllowShort,
          " | hedge=",Inp_AllowHedging,
          (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
+         (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
