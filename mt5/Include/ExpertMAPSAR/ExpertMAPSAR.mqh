@@ -138,42 +138,52 @@ public:
    void              InverseSignals(const bool value){ m_inverse=value; }
    bool              AllowHedging(void) const        { return(m_allow_hedging); }
 
+   // Guard the position side that will actually be opened.
+   // Normal:  long signal → buy,  short signal → sell
+   // Inverse: long signal → sell, short signal → buy
+   bool     CanOpenPositionSide(const bool openingBuy) const
+     {
+      if(openingBuy)
+        {
+         if(!m_allow_long)
+            return(false);
+         if(HasSidePosition(true))
+            return(false);
+         if(!m_allow_hedging && HasSidePosition(false))
+            return(false);
+        }
+      else
+        {
+         if(!m_allow_short)
+            return(false);
+         if(HasSidePosition(false))
+            return(false);
+         if(!m_allow_hedging && HasSidePosition(true))
+            return(false);
+        }
+      return(true);
+     }
+
    virtual bool      CheckOpenLong(void)
      {
-      if(!m_allow_long)
-         return(false);
-
-      if(HasSidePosition(true))
-         return(false);
-
-      if(!m_allow_hedging && HasSidePosition(false))
+      // Long signal path → buy normally, sell when inverse
+      if(!CanOpenPositionSide(!m_inverse))
          return(false);
 
       if(!m_inverse)
          return(CExpert::CheckOpenLong());
-
-      if(!m_allow_short)
-         return(false);
 
       return(OpenInvertedFromLongSignal());
      }
 
    virtual bool      CheckOpenShort(void)
      {
-      if(!m_allow_short)
-         return(false);
-
-      if(HasSidePosition(false))
-         return(false);
-
-      if(!m_allow_hedging && HasSidePosition(true))
+      // Short signal path → sell normally, buy when inverse
+      if(!CanOpenPositionSide(m_inverse))
          return(false);
 
       if(!m_inverse)
          return(CExpert::CheckOpenShort());
-
-      if(!m_allow_long)
-         return(false);
 
       return(OpenInvertedFromShortSignal());
      }
@@ -203,6 +213,9 @@ public:
      {
       if(!m_allow_hedging)
          return(CExpert::Processing());
+
+      // Same as CExpert::Processing — CheckOpenLong uses cached m_direction.
+      m_signal.SetDirection();
 
       bool result=false;
 
