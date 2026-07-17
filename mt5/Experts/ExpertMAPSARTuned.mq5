@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.18"
+#property version   "1.21"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -99,6 +99,7 @@ int OnInit(void)
    ExtExpert.Configure(Inp_AllowLong,Inp_AllowShort,Expert_MagicNumber);
    ExtExpert.InverseSignals(Inp_InverseSignals);
    ExtExpert.AllowHedging(Inp_AllowHedging);
+   ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
      {
@@ -300,7 +301,7 @@ int OnInit(void)
    Print(Inp_Expert_Title," init OK | ",Symbol()," ",EnumToString(Period()),
          " | L=",Inp_AllowLong," S=",Inp_AllowShort,
          " | hedge=",Inp_AllowHedging,
-         (Inp_InverseSignals ? " | INVERSE ON" : ""),
+         (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));

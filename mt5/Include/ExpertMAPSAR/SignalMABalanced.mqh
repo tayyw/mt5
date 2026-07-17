@@ -21,11 +21,11 @@ public:
 
    virtual bool      CheckOpenShort(double &price,double &sl,double &tp,datetime &expiration)
      {
-      const double direction=Direction();
-      if(direction==EMPTY_VALUE)
+      // Use cached m_direction from SetDirection() (same as CheckOpenLong).
+      if(m_direction==EMPTY_VALUE)
          return(false);
 
-      if(-direction>=m_threshold_open_short)
+      if(-m_direction>=m_threshold_open_short)
         {
          m_base_price=0.0;
          return(OpenShortParams(price,sl,tp,expiration));

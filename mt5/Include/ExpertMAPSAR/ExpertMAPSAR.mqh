@@ -14,6 +14,7 @@ private:
    bool     m_allow_short;
    bool     m_allow_hedging;
    bool     m_inverse;
+   bool     m_mg_group_exits;   // martingale basket owns exits (skip signal close)
    ulong    m_magic_number;
 
    bool     HasSidePosition(const bool isBuy) const
@@ -88,7 +89,13 @@ private:
       double useTP=0.0;
       MirrorStopsForShort(price,sl,tp,useSL,useTP);
 
-      return(m_trade.Sell(lot,0.0,useSL,useTP,"INV"));
+      const bool ok=m_trade.Sell(lot,0.0,useSL,useTP,"INV");
+      if(ok)
+         Print("INVERSE: long signal → SELL lot=",DoubleToString(lot,2));
+      else
+         Print("INVERSE: long signal → SELL failed: ",m_trade.ResultRetcode()," ",
+               m_trade.ResultRetcodeDescription());
+      return(ok);
      }
 
    bool     OpenInvertedFromShortSignal(void)
@@ -115,7 +122,13 @@ private:
       double useTP=0.0;
       MirrorStopsForLong(price,sl,tp,useSL,useTP);
 
-      return(m_trade.Buy(lot,0.0,useSL,useTP,"INV"));
+      const bool ok=m_trade.Buy(lot,0.0,useSL,useTP,"INV");
+      if(ok)
+         Print("INVERSE: short signal → BUY lot=",DoubleToString(lot,2));
+      else
+         Print("INVERSE: short signal → BUY failed: ",m_trade.ResultRetcode()," ",
+               m_trade.ResultRetcodeDescription());
+      return(ok);
      }
 
 public:
@@ -123,6 +136,7 @@ public:
                                            m_allow_short(true),
                                            m_allow_hedging(false),
                                            m_inverse(false),
+                                           m_mg_group_exits(false),
                                            m_magic_number(0) {}
 
    void              Configure(const bool allowLong,const bool allowShort,const ulong magic)
@@ -136,44 +150,87 @@ public:
    void              AllowShort(const bool value)    { m_allow_short=value; }
    void              AllowHedging(const bool value)  { m_allow_hedging=value; }
    void              InverseSignals(const bool value){ m_inverse=value; }
+   void              MartingaleGroupExits(const bool value){ m_mg_group_exits=value; }
    bool              AllowHedging(void) const        { return(m_allow_hedging); }
+
+   // When MG group-close is on, skip signal exits so a side can stack to
+   // StackMaxLegs and leave via basket recovery. Money emergency close still runs.
+   virtual bool      CheckClose(void)
+     {
+      double lot=0.0;
+      if((lot=m_money.CheckClose(GetPointer(m_position)))!=0.0)
+         return(CloseAll(lot));
+
+      if(m_mg_group_exits)
+         return(false);
+
+      if(m_position.PositionType()==POSITION_TYPE_BUY)
+        {
+         if(CheckCloseLong())
+           {
+            DeleteOrdersLong();
+            return(true);
+           }
+        }
+      else
+        {
+         if(CheckCloseShort())
+           {
+            DeleteOrdersShort();
+            return(true);
+           }
+        }
+      return(false);
+     }
+
+   // Guard the position side that will actually be opened.
+   // Normal:  long signal → buy,  short signal → sell
+   // Inverse: long signal → sell, short signal → buy
+   // Without this, inverse+hedge floods buys: CheckOpenShort only blocked on
+   // existing sells, then OpenInvertedFromShortSignal kept buying every tick.
+   bool              CanOpenPositionSide(const bool openingBuy) const
+     {
+      if(openingBuy)
+        {
+         if(!m_allow_long)
+            return(false);
+         if(HasSidePosition(true))
+            return(false);
+         if(!m_allow_hedging && HasSidePosition(false))
+            return(false);
+        }
+      else
+        {
+         if(!m_allow_short)
+            return(false);
+         if(HasSidePosition(false))
+            return(false);
+         if(!m_allow_hedging && HasSidePosition(true))
+            return(false);
+        }
+      return(true);
+     }
 
    virtual bool      CheckOpenLong(void)
      {
-      if(!m_allow_long)
-         return(false);
-
-      if(HasSidePosition(true))
-         return(false);
-
-      if(!m_allow_hedging && HasSidePosition(false))
+      // Long signal path → buy normally, sell when inverse
+      if(!CanOpenPositionSide(!m_inverse))
          return(false);
 
       if(!m_inverse)
          return(CExpert::CheckOpenLong());
-
-      if(!m_allow_short)
-         return(false);
 
       return(OpenInvertedFromLongSignal());
      }
 
    virtual bool      CheckOpenShort(void)
      {
-      if(!m_allow_short)
-         return(false);
-
-      if(HasSidePosition(false))
-         return(false);
-
-      if(!m_allow_hedging && HasSidePosition(true))
+      // Short signal path → sell normally, buy when inverse
+      if(!CanOpenPositionSide(m_inverse))
          return(false);
 
       if(!m_inverse)
          return(CExpert::CheckOpenShort());
-
-      if(!m_allow_long)
-         return(false);
 
       return(OpenInvertedFromShortSignal());
      }
@@ -203,6 +260,11 @@ public:
      {
       if(!m_allow_hedging)
          return(CExpert::Processing());
+
+      // Same as CExpert::Processing — without this, m_direction stays EMPTY_VALUE
+      // and CheckOpenLong / CheckClose* never fire. CheckOpenShort still worked only
+      // because SignalMABalanced recomputes Direction() itself (short bias).
+      m_signal.SetDirection();
 
       bool result=false;
 

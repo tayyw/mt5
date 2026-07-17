@@ -278,6 +278,12 @@ public:
       m_stack_step_points=MathMax(1,stackStepPoints);
       m_last_stack_bar_buy=0;
       m_last_stack_bar_sell=0;
+
+      // StackMaxLegs=0/1 → posCount>=max blocks every add (only the first leg can exist).
+      if(m_allow_stack && m_stack_max_legs<2)
+         Print("WARN: MG StackMaxLegs=",stackMaxLegs,
+               " (effective ",m_stack_max_legs,
+               ") — need >= 2 to add stack legs. Stacking is disabled.");
      }
 
    void              Update(void)
