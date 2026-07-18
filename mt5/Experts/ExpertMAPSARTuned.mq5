@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.22"
+#property version   "1.23"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -15,6 +15,7 @@
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
 #include <ExpertMAPSAR\MartingaleBasket.mqh>
 #include <ExpertMAPSAR\SignalSpread.mqh>
+#include <ExpertMAPSAR\SignalADX.mqh>
 
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
@@ -59,6 +60,11 @@ input group "=== RSI momentum filter ==="
 input bool               Inp_UseRSIFilter            =true;
 input int                Inp_RSI_Period                =14;
 input double             Inp_RSI_Filter_Weight       =0.25;
+
+input group "=== ADX regime filter ==="
+input bool               Inp_UseADXFilter            =true;
+input int                Inp_ADX_Period              =14;
+input double             Inp_ADX_Min                 =25.0; // Skip entries when ADX below this
 
 input group "=== Trailing PSAR ==="
 input double             Inp_Trailing_ParabolicSAR_Step    =0.014;
@@ -221,6 +227,27 @@ int OnInit(void)
         }
      }
 
+   if(Inp_UseADXFilter)
+     {
+      CSignalADX *adx=new CSignalADX;
+      if(adx==NULL)
+        {
+         printf(__FUNCTION__+": error creating ADX filter");
+         ExtExpert.Deinit();
+         return(INIT_FAILED);
+        }
+      signal.AddFilter(adx);
+      adx.PeriodADX(Inp_ADX_Period);
+      adx.MinADX(Inp_ADX_Min);
+      adx.Weight(1.0);
+      if(!adx.ValidationSettings())
+        {
+         printf(__FUNCTION__+": error ADX filter parameters");
+         ExtExpert.Deinit();
+         return(INIT_FAILED);
+        }
+     }
+
    CTrailingPSAR *trailing=new CTrailingPSAR;
    if(trailing==NULL)
      {
@@ -306,6 +333,7 @@ int OnInit(void)
          (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
          (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
+         (Inp_UseADXFilter ? StringFormat(" | ADX>=%.1f",Inp_ADX_Min) : " | ADX off"),
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
    return(INIT_SUCCEEDED);
