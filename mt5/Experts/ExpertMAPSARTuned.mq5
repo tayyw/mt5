@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.22"
+#property version   "1.23"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -47,6 +47,11 @@ input bool               Inp_UseHTFFilter            =true;
 input ENUM_TIMEFRAMES    Inp_HTF_Period              =PERIOD_M15;
 input int                Inp_HTF_MA_Period           =50;
 input double             Inp_HTF_Filter_Weight       =0.30;
+
+input group "=== Re-entry cooldown ==="
+input bool               Inp_UseReentryCooldown      =true;
+input int                Inp_ReentryCooldownBars     =1;   // bars of Inp_ReentryCooldownTF
+input ENUM_TIMEFRAMES    Inp_ReentryCooldownTF       =PERIOD_CURRENT; // chart TF when CURRENT
 
 input group "=== Session & spread ==="
 input bool               Inp_UseSessionFilter        =true;
@@ -102,6 +107,9 @@ int OnInit(void)
    ExtExpert.AllowHedging(Inp_AllowHedging);
    ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
    ExtExpert.NoNewEntries(Inp_NoNewEntries);
+   ExtExpert.UseReentryCooldown(Inp_UseReentryCooldown);
+   ExtExpert.ReentryCooldownBars(Inp_ReentryCooldownBars);
+   ExtExpert.ReentryCooldownTF(Inp_ReentryCooldownTF);
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
      {
@@ -305,6 +313,12 @@ int OnInit(void)
          " | hedge=",Inp_AllowHedging,
          (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
          (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
+         (Inp_UseReentryCooldown
+          ? StringFormat(" | reentry %d x %s",Inp_ReentryCooldownBars,
+                         EnumToString(Inp_ReentryCooldownTF==PERIOD_CURRENT
+                                      ? (ENUM_TIMEFRAMES)Period()
+                                      : Inp_ReentryCooldownTF))
+          : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));

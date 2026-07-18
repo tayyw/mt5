@@ -18,6 +18,65 @@ private:
    bool     m_no_new_entries;   // block signal entries; MG stack/exits still run
    ulong    m_magic_number;
 
+   // Same-direction re-entry cooldown (first legs only; MG stack untouched)
+   bool              m_use_reentry_cooldown;
+   int               m_reentry_cooldown_bars;
+   ENUM_TIMEFRAMES   m_reentry_cooldown_tf;
+   bool              m_had_long;
+   bool              m_had_short;
+   datetime          m_long_cooldown_until;
+   datetime          m_short_cooldown_until;
+
+   int               CooldownSeconds(void) const
+     {
+      ENUM_TIMEFRAMES tf=m_reentry_cooldown_tf;
+      if(tf==PERIOD_CURRENT)
+         tf=::Period();
+      const int bars=MathMax(1,m_reentry_cooldown_bars);
+      return((int)PeriodSeconds(tf)*bars);
+     }
+
+   void              ArmCooldownForSide(const bool wasBuy)
+     {
+      if(!m_use_reentry_cooldown)
+         return;
+      const datetime until=TimeCurrent()+CooldownSeconds();
+      if(wasBuy)
+        {
+         m_long_cooldown_until=until;
+         m_had_long=false;
+        }
+      else
+        {
+         m_short_cooldown_until=until;
+         m_had_short=false;
+        }
+     }
+
+   // Detect sides closed outside CheckClose (e.g. MG group exit).
+   void              UpdateReentryCooldown(void)
+     {
+      const bool hasLong=HasSidePosition(true);
+      const bool hasShort=HasSidePosition(false);
+      if(m_use_reentry_cooldown)
+        {
+         if(m_had_long && !hasLong)
+            m_long_cooldown_until=TimeCurrent()+CooldownSeconds();
+         if(m_had_short && !hasShort)
+            m_short_cooldown_until=TimeCurrent()+CooldownSeconds();
+        }
+      m_had_long=hasLong;
+      m_had_short=hasShort;
+     }
+
+   bool              CanOpenAfterCooldown(const bool openingBuy) const
+     {
+      if(!m_use_reentry_cooldown)
+         return(true);
+      const datetime until=(openingBuy ? m_long_cooldown_until : m_short_cooldown_until);
+      return(TimeCurrent()>=until);
+     }
+
    bool     HasSidePosition(const bool isBuy) const
      {
       CPositionInfo pos;
@@ -139,7 +198,14 @@ public:
                                            m_inverse(false),
                                            m_mg_group_exits(false),
                                            m_no_new_entries(false),
-                                           m_magic_number(0) {}
+                                           m_magic_number(0),
+                                           m_use_reentry_cooldown(false),
+                                           m_reentry_cooldown_bars(1),
+                                           m_reentry_cooldown_tf(PERIOD_CURRENT),
+                                           m_had_long(false),
+                                           m_had_short(false),
+                                           m_long_cooldown_until(0),
+                                           m_short_cooldown_until(0) {}
 
    void              Configure(const bool allowLong,const bool allowShort,const ulong magic)
      {
@@ -154,6 +220,15 @@ public:
    void              InverseSignals(const bool value){ m_inverse=value; }
    void              MartingaleGroupExits(const bool value){ m_mg_group_exits=value; }
    void              NoNewEntries(const bool value)  { m_no_new_entries=value; }
+   void              UseReentryCooldown(const bool value){ m_use_reentry_cooldown=value; }
+   void              ReentryCooldownBars(const int value)
+     {
+      m_reentry_cooldown_bars=MathMax(1,value);
+     }
+   void              ReentryCooldownTF(const ENUM_TIMEFRAMES value)
+     {
+      m_reentry_cooldown_tf=value;
+     }
    bool              AllowHedging(void) const        { return(m_allow_hedging); }
    bool              NoNewEntries(void) const        { return(m_no_new_entries); }
 
@@ -161,18 +236,27 @@ public:
    // StackMaxLegs and leave via basket recovery. Money emergency close still runs.
    virtual bool      CheckClose(void)
      {
+      const bool wasBuy=(m_position.PositionType()==POSITION_TYPE_BUY);
       double lot=0.0;
       if((lot=m_money.CheckClose(GetPointer(m_position)))!=0.0)
-         return(CloseAll(lot));
+        {
+         if(!CloseAll(lot))
+            return(false);
+         // Money close may flatten both sides.
+         ArmCooldownForSide(true);
+         ArmCooldownForSide(false);
+         return(true);
+        }
 
       if(m_mg_group_exits)
          return(false);
 
-      if(m_position.PositionType()==POSITION_TYPE_BUY)
+      if(wasBuy)
         {
          if(CheckCloseLong())
            {
             DeleteOrdersLong();
+            ArmCooldownForSide(true);
             return(true);
            }
         }
@@ -181,6 +265,7 @@ public:
          if(CheckCloseShort())
            {
             DeleteOrdersShort();
+            ArmCooldownForSide(false);
             return(true);
            }
         }
@@ -218,7 +303,10 @@ public:
    virtual bool      CheckOpenLong(void)
      {
       // Long signal path → buy normally, sell when inverse
-      if(!CanOpenPositionSide(!m_inverse))
+      const bool openingBuy=!m_inverse;
+      if(!CanOpenPositionSide(openingBuy))
+         return(false);
+      if(!CanOpenAfterCooldown(openingBuy))
          return(false);
 
       if(!m_inverse)
@@ -230,7 +318,10 @@ public:
    virtual bool      CheckOpenShort(void)
      {
       // Short signal path → sell normally, buy when inverse
-      if(!CanOpenPositionSide(m_inverse))
+      const bool openingBuy=m_inverse;
+      if(!CanOpenPositionSide(openingBuy))
+         return(false);
+      if(!CanOpenAfterCooldown(openingBuy))
          return(false);
 
       if(!m_inverse)
@@ -266,6 +357,9 @@ public:
 
    virtual bool      Processing(void)
      {
+      // Catch MG / external closes before first-leg CheckOpen on this tick.
+      UpdateReentryCooldown();
+
       if(!m_allow_hedging)
          return(CExpert::Processing());
 
