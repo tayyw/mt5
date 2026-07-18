@@ -286,6 +286,16 @@ public:
                ") — need >= 2 to add stack legs. Stacking is disabled.");
      }
 
+   void              AllowStack(const bool value) { m_allow_stack=value; }
+   bool              AllowStack(void) const       { return(m_allow_stack); }
+
+   bool              CloseAllPositions(void)
+     {
+      const bool buyOk=CloseSideBasket(true);
+      const bool sellOk=CloseSideBasket(false);
+      return(buyOk && sellOk);
+     }
+
    void              Update(void)
      {
       UpdateSide(true);
