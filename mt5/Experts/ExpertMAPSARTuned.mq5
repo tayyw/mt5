@@ -4,8 +4,8 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.22"
-#property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
+#property version   "1.24"
+#property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets, basket aborts"
 
 #include <Expert\Signal\SignalITF.mqh>
 #include <Expert\Signal\SignalRSI.mqh>
@@ -80,6 +80,16 @@ input bool               Inp_MG_AllowStack             =true;
 input int                Inp_MG_StackMaxLegs           =4;
 input int                Inp_MG_StackStepPoints        =120;
 
+input group "=== Martingale aborts ==="
+input double             Inp_MG_MaxBasketLossPct       =2.0;  // Close side if floating loss >= % equity (0=off)
+input double             Inp_MG_AbortATRMult           =3.0;  // Close if adverse from 1st leg >= mult*ATR (0=off)
+input int                Inp_MG_AbortATRPeriod         =14;
+input int                Inp_MG_AbortMaxBars           =48;   // Close if age>=bars and never touched BE (0=off)
+
+input group "=== Tester withdrawals ==="
+input bool               Inp_SimulateWithdrawals       =false; // Tester only: pull profit milestones
+input double             Inp_WithdrawEvery             =1000.0; // Withdraw this amount each time balance is +step above baseline
+
 //+------------------------------------------------------------------+
 //| Globals                                                          |
 //+------------------------------------------------------------------+
@@ -87,6 +97,8 @@ int                 Expert_MagicNumber =27894;
 CExpertMAPSAR       ExtExpert;
 CMartingaleBasket   g_mgBasket;
 CMoneyMartingale   *g_money           =NULL;
+double              g_withdraw_baseline=0.0;
+double              g_withdrawn_total  =0.0;
 
 //+------------------------------------------------------------------+
 int OnInit(void)
@@ -102,6 +114,19 @@ int OnInit(void)
    ExtExpert.AllowHedging(Inp_AllowHedging);
    ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
    ExtExpert.NoNewEntries(Inp_NoNewEntries);
+
+   g_withdraw_baseline=AccountInfoDouble(ACCOUNT_BALANCE);
+   g_withdrawn_total=0.0;
+   if(Inp_SimulateWithdrawals)
+     {
+      if(!MQLInfoInteger(MQL_TESTER))
+         Print("WARN: SimulateWithdrawals only works in Strategy Tester (TesterWithdrawal).");
+      if(Inp_WithdrawEvery<=0.0)
+        {
+         Print("ERROR: Inp_WithdrawEvery must be > 0");
+         return(INIT_FAILED);
+        }
+     }
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
      {
@@ -272,7 +297,9 @@ int OnInit(void)
    g_mgBasket.Init(Symbol(),Expert_MagicNumber,Period(),g_money,
                    Inp_UseMartingale && Inp_MG_GroupClose,
                    Inp_UseMartingale && Inp_MG_AllowStack,
-                   Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints);
+                   Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints,
+                   Inp_MG_MaxBasketLossPct,Inp_MG_AbortATRMult,
+                   Inp_MG_AbortATRPeriod,Inp_MG_AbortMaxBars);
 
    if(!g_money.ValidationSettings())
      {
@@ -307,13 +334,74 @@ int OnInit(void)
          (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
-         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
+         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""),
+         (Inp_UseMartingale ? StringFormat(" | abort loss=%.1f%% atr=%.1fx bars=%d",
+                                           Inp_MG_MaxBasketLossPct,Inp_MG_AbortATRMult,Inp_MG_AbortMaxBars) : ""),
+         (Inp_SimulateWithdrawals ? StringFormat(" | WD every %.0f (base=%.2f)",Inp_WithdrawEvery,g_withdraw_baseline) : ""));
    return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+bool HasOurPosition(void)
+  {
+   CPositionInfo pos;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      if(!pos.SelectByIndex(i))
+         continue;
+      if(pos.Symbol()!=_Symbol)
+         continue;
+      if((ulong)pos.Magic()!= (ulong)Expert_MagicNumber)
+         continue;
+      return(true);
+     }
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| When balance is +WithdrawEvery above baseline, pull that amount. |
+//| Only flat (no EA positions) so floating DD can't block margin.   |
+//+------------------------------------------------------------------+
+void TrySimulateWithdrawals(void)
+  {
+   if(!Inp_SimulateWithdrawals)
+      return;
+   if(!MQLInfoInteger(MQL_TESTER))
+      return;
+   if(Inp_WithdrawEvery<=0.0)
+      return;
+   if(HasOurPosition())
+      return;
+
+   // e.g. base 10k → at 11k withdraw 1k (balance≈10k); at 11k again withdraw again.
+   while(AccountInfoDouble(ACCOUNT_BALANCE) - g_withdraw_baseline >= Inp_WithdrawEvery)
+     {
+      const double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+      const double free=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      if(free < Inp_WithdrawEvery)
+        {
+         Print("WD skip: free margin ",DoubleToString(free,2),
+               " < ",DoubleToString(Inp_WithdrawEvery,2));
+         break;
+        }
+      if(!TesterWithdrawal(Inp_WithdrawEvery))
+        {
+         Print("WD failed: ",GetLastError()," bal=",DoubleToString(bal,2));
+         break;
+        }
+      g_withdrawn_total+=Inp_WithdrawEvery;
+      Print("WD ",DoubleToString(Inp_WithdrawEvery,2),
+            " | bal ",DoubleToString(bal,2)," → ",DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2),
+            " | total WD=",DoubleToString(g_withdrawn_total,2));
+     }
   }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+   if(Inp_SimulateWithdrawals && MQLInfoInteger(MQL_TESTER))
+      Print("WD summary: withdrawn=",DoubleToString(g_withdrawn_total,2),
+            " | tester STAT_WITHDRAWAL=",DoubleToString(TesterStatistics(STAT_WITHDRAWAL),2));
    ExtExpert.Deinit();
   }
 
@@ -327,6 +415,8 @@ void OnTick(void)
 
    if(Inp_UseMartingale)
       g_mgBasket.Update();
+
+   TrySimulateWithdrawals();
   }
 
 //+------------------------------------------------------------------+
