@@ -15,6 +15,7 @@ protected:
    int      m_martingale_max_steps;
    double   m_lot_scale;
    double   m_max_lot_cap;
+   double   m_sizing_base;   // 0=live free margin; >0=cap capital used for % sizing
 
    static bool DealClosesLongBasket(const CDealInfo &deal)
      {
@@ -103,14 +104,53 @@ protected:
       return(NormalizeLot(lot));
      }
 
+   // Capital used for Percent sizing. Caps growth once free margin exceeds base.
+   double   SizingCapital(void) const
+     {
+      const double free=m_account.FreeMargin();
+      if(m_sizing_base<=0.0)
+         return(free);
+      return(MathMin(free,m_sizing_base));
+     }
+
+   // Same math as CAccountInfo::MaxLotCheck, but uses SizingCapital() instead of FreeMargin().
+   double   LotFromPercent(const ENUM_ORDER_TYPE type,const double price) const
+     {
+      if(m_symbol==NULL || price<=0.0 || m_percent<1.0 || m_percent>100.0)
+         return(0.0);
+
+      // No base cap → keep stock MaxLotCheck path (identical live-margin behavior).
+      if(m_sizing_base<=0.0)
+         return(m_account.MaxLotCheck(m_symbol.Name(),type,price,m_percent));
+
+      double margin=0.0;
+      if(!OrderCalcMargin(type,m_symbol.Name(),1.0,price,margin) || margin<=0.0)
+         return(0.0);
+
+      double volume=NormalizeDouble(SizingCapital()*m_percent/100.0/margin,2);
+
+      const double stepvol=m_symbol.LotsStep();
+      if(stepvol>0.0)
+         volume=stepvol*MathFloor(volume/stepvol);
+
+      const double minvol=m_symbol.LotsMin();
+      if(volume<minvol)
+         return(0.0);
+
+      const double maxvol=m_symbol.LotsMax();
+      if(volume>maxvol)
+         volume=maxvol;
+
+      return(volume);
+     }
+
    double   BaseLotLong(const double price) const
      {
       if(m_symbol==NULL)
          return(0.0);
 
-      if(price==0.0)
-         return(m_account.MaxLotCheck(m_symbol.Name(),ORDER_TYPE_BUY,m_symbol.Ask(),m_percent));
-      return(m_account.MaxLotCheck(m_symbol.Name(),ORDER_TYPE_BUY,price,m_percent));
+      const double px=(price==0.0 ? m_symbol.Ask() : price);
+      return(LotFromPercent(ORDER_TYPE_BUY,px));
      }
 
    double   BaseLotShort(const double price) const
@@ -118,9 +158,8 @@ protected:
       if(m_symbol==NULL)
          return(0.0);
 
-      if(price==0.0)
-         return(m_account.MaxLotCheck(m_symbol.Name(),ORDER_TYPE_SELL,m_symbol.Bid(),m_percent));
-      return(m_account.MaxLotCheck(m_symbol.Name(),ORDER_TYPE_SELL,price,m_percent));
+      const double px=(price==0.0 ? m_symbol.Bid() : price);
+      return(LotFromPercent(ORDER_TYPE_SELL,px));
      }
 
 public:
@@ -128,13 +167,15 @@ public:
                                               m_martingale_mult(2.0),
                                               m_martingale_max_steps(4),
                                               m_lot_scale(1.0),
-                                              m_max_lot_cap(0.0) {}
+                                              m_max_lot_cap(0.0),
+                                              m_sizing_base(0.0) {}
 
    void              UseMartingale(const bool value)       { m_use_martingale=value; }
    void              MartingaleMult(const double value)    { m_martingale_mult=MathMax(1.0,value); }
    void              MartingaleMaxSteps(const int value)   { m_martingale_max_steps=MathMax(0,value); }
    void              LotScale(const double value)          { m_lot_scale=MathMax(0.01,value); }
    void              MaxLotCap(const double value)         { m_max_lot_cap=MathMax(0.0,value); }
+   void              SizingBase(const double value)        { m_sizing_base=MathMax(0.0,value); }
    bool              IsMartingaleEnabled(void) const       { return(m_use_martingale); }
    int               MaxSteps(void) const                  { return(m_martingale_max_steps); }
 

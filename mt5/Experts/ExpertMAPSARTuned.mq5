@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.24"
+#property version   "1.25"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -68,6 +68,7 @@ input double             Inp_Trailing_ParabolicSAR_Maximum =0.18;
 input group "=== Money ==="
 input double             Inp_Money_DecreaseFactor      =2.5;
 input double             Inp_Money_Percent             =4.0;
+input double             Inp_Money_SizingBase          =0.0; // 0=live free margin; >0=cap capital for % sizing (fixed lots above this)
 input double             Inp_LotScale                  =1.0;
 input double             Inp_MaxLotCap                 =0.0;
 
@@ -270,6 +271,7 @@ int OnInit(void)
 
    g_money.DecreaseFactor(Inp_Money_DecreaseFactor);
    g_money.Percent(Inp_Money_Percent);
+   g_money.SizingBase(Inp_Money_SizingBase);
    g_money.LotScale(Inp_LotScale);
    g_money.MaxLotCap(Inp_MaxLotCap);
    g_money.UseMartingale(Inp_UseMartingale);
@@ -317,7 +319,11 @@ int OnInit(void)
                          (Inp_MaxEquityDD_CloseAll ? "+flatten" : ""))
           : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
-         " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
+         " | money ",Inp_Money_Percent,"%",
+         (Inp_Money_SizingBase>0.0
+          ? StringFormat(" base=%.0f",Inp_Money_SizingBase)
+          : ""),
+         " scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
    return(INIT_SUCCEEDED);
   }
