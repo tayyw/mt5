@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.22"
+#property version   "1.25"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -15,6 +15,7 @@
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
 #include <ExpertMAPSAR\MartingaleBasket.mqh>
 #include <ExpertMAPSAR\SignalSpread.mqh>
+#include <ExpertMAPSAR\EquityDDGuard.mqh>
 
 //+------------------------------------------------------------------+
 //| Inputs                                                           |
@@ -67,8 +68,13 @@ input double             Inp_Trailing_ParabolicSAR_Maximum =0.18;
 input group "=== Money ==="
 input double             Inp_Money_DecreaseFactor      =2.5;
 input double             Inp_Money_Percent             =4.0;
+input double             Inp_Money_SizingBase          =0.0; // 0=live free margin; >0=cap capital for % sizing (fixed lots above this)
 input double             Inp_LotScale                  =1.0;
 input double             Inp_MaxLotCap                 =0.0;
+
+input group "=== Equity DD guard ==="
+input double             Inp_MaxEquityDDPercent        =0.0;
+input bool               Inp_MaxEquityDD_CloseAll      =true;
 
 input group "=== Martingale ==="
 input bool               Inp_UseMartingale             =true;
@@ -87,6 +93,7 @@ int                 Expert_MagicNumber =27894;
 CExpertMAPSAR       ExtExpert;
 CMartingaleBasket   g_mgBasket;
 CMoneyMartingale   *g_money           =NULL;
+CEquityDDGuard      g_equityDD;
 
 //+------------------------------------------------------------------+
 int OnInit(void)
@@ -102,6 +109,7 @@ int OnInit(void)
    ExtExpert.AllowHedging(Inp_AllowHedging);
    ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
    ExtExpert.NoNewEntries(Inp_NoNewEntries);
+   g_equityDD.Init(Inp_MaxEquityDDPercent);
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
      {
@@ -263,6 +271,7 @@ int OnInit(void)
 
    g_money.DecreaseFactor(Inp_Money_DecreaseFactor);
    g_money.Percent(Inp_Money_Percent);
+   g_money.SizingBase(Inp_Money_SizingBase);
    g_money.LotScale(Inp_LotScale);
    g_money.MaxLotCap(Inp_MaxLotCap);
    g_money.UseMartingale(Inp_UseMartingale);
@@ -305,8 +314,16 @@ int OnInit(void)
          " | hedge=",Inp_AllowHedging,
          (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
          (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
+         (Inp_MaxEquityDDPercent>0.0
+          ? StringFormat(" | maxEqDD=%.1f%%%s",Inp_MaxEquityDDPercent,
+                         (Inp_MaxEquityDD_CloseAll ? "+flatten" : ""))
+          : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
-         " | money ",Inp_Money_Percent,"% scale=",Inp_LotScale,
+         " | money ",Inp_Money_Percent,"%",
+         (Inp_Money_SizingBase>0.0
+          ? StringFormat(" base=%.0f",Inp_Money_SizingBase)
+          : ""),
+         " scale=",Inp_LotScale,
          (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
    return(INIT_SUCCEEDED);
   }
@@ -320,6 +337,41 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick(void)
   {
+   if(g_equityDD.Enabled())
+     {
+      if(g_equityDD.Breached())
+        {
+         Print("EQUITY DD TRIP: dd=",DoubleToString(g_equityDD.CurrentDDPercent(),2),
+               "% peak=",DoubleToString(g_equityDD.PeakEquity(),2),
+               " equity=",DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+               " limit=",DoubleToString(Inp_MaxEquityDDPercent,2),"%",
+               (Inp_MaxEquityDD_CloseAll ? " — flatten & resume" : " — pause entries/stacks"));
+
+         if(Inp_MaxEquityDD_CloseAll)
+           {
+            g_mgBasket.CloseAllPositions();
+            // New baseline so trading continues; otherwise DD stays breached forever.
+            g_equityDD.ResetPeakToEquity();
+            ExtExpert.NoNewEntries(Inp_NoNewEntries);
+            g_mgBasket.AllowStack(Inp_UseMartingale && Inp_MG_AllowStack);
+           }
+         else
+           {
+            ExtExpert.NoNewEntries(true);
+            g_mgBasket.AllowStack(false);
+            g_equityDD.SoftPaused(true);
+           }
+        }
+      else if(g_equityDD.SoftPaused())
+        {
+         // CloseAll=false: resume once DD drops back under the limit.
+         ExtExpert.NoNewEntries(Inp_NoNewEntries);
+         g_mgBasket.AllowStack(Inp_UseMartingale && Inp_MG_AllowStack);
+         g_equityDD.SoftPaused(false);
+         Print("EQUITY DD RESUME: dd back under ",DoubleToString(Inp_MaxEquityDDPercent,2),"%");
+        }
+     }
+
    if(Inp_UseMartingale)
       g_mgBasket.Update();
 
