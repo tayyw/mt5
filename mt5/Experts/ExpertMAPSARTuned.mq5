@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.25"
+#property version   "1.26"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -75,6 +75,8 @@ input double             Inp_MaxLotCap                 =0.0;
 input group "=== Equity DD guard ==="
 input double             Inp_MaxEquityDDPercent        =0.0;
 input bool               Inp_MaxEquityDD_CloseAll      =true;
+input bool               Inp_MaxEquityDD_RecoverClose  =false; // CloseAll=false: flatten after RecoverPct of trip loss is recovered
+input double             Inp_MaxEquityDD_RecoverPct    =80.0;  // % of peak→trough loss that must recover before flatten
 
 input group "=== Martingale ==="
 input bool               Inp_UseMartingale             =true;
@@ -315,8 +317,11 @@ int OnInit(void)
          (Inp_InverseSignals ? " | INVERSE ON (long sig→SELL, short sig→BUY)" : ""),
          (Inp_NoNewEntries ? " | NO NEW ENTRIES (MG manage only)" : ""),
          (Inp_MaxEquityDDPercent>0.0
-          ? StringFormat(" | maxEqDD=%.1f%%%s",Inp_MaxEquityDDPercent,
-                         (Inp_MaxEquityDD_CloseAll ? "+flatten" : ""))
+          ? StringFormat(" | maxEqDD=%.1f%%%s%s",Inp_MaxEquityDDPercent,
+                         (Inp_MaxEquityDD_CloseAll ? "+flatten" : "+pause"),
+                         (!Inp_MaxEquityDD_CloseAll && Inp_MaxEquityDD_RecoverClose
+                          ? StringFormat("+recover%.0f%%",Inp_MaxEquityDD_RecoverPct)
+                          : ""))
           : ""),
          " | thresh L=",Inp_ThresholdOpen," S=",Inp_ThresholdOpenShort,
          " | money ",Inp_Money_Percent,"%",
@@ -335,38 +340,72 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
+void EquityDDResumeTrading(void)
+  {
+   ExtExpert.NoNewEntries(Inp_NoNewEntries);
+   g_mgBasket.AllowStack(Inp_UseMartingale && Inp_MG_AllowStack);
+  }
+
+//+------------------------------------------------------------------+
 void OnTick(void)
   {
    if(g_equityDD.Enabled())
      {
-      if(g_equityDD.Breached())
-        {
-         Print("EQUITY DD TRIP: dd=",DoubleToString(g_equityDD.CurrentDDPercent(),2),
-               "% peak=",DoubleToString(g_equityDD.PeakEquity(),2),
-               " equity=",DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
-               " limit=",DoubleToString(Inp_MaxEquityDDPercent,2),"%",
-               (Inp_MaxEquityDD_CloseAll ? " — flatten & resume" : " — pause entries/stacks"));
+      const bool breached=g_equityDD.Breached();
 
+      if(breached)
+        {
          if(Inp_MaxEquityDD_CloseAll)
            {
+            Print("EQUITY DD TRIP: dd=",DoubleToString(g_equityDD.CurrentDDPercent(),2),
+                  "% peak=",DoubleToString(g_equityDD.PeakEquity(),2),
+                  " equity=",DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+                  " limit=",DoubleToString(Inp_MaxEquityDDPercent,2),"% — flatten & resume");
             g_mgBasket.CloseAllPositions();
             // New baseline so trading continues; otherwise DD stays breached forever.
             g_equityDD.ResetPeakToEquity();
-            ExtExpert.NoNewEntries(Inp_NoNewEntries);
-            g_mgBasket.AllowStack(Inp_UseMartingale && Inp_MG_AllowStack);
+            EquityDDResumeTrading();
            }
-         else
+         else if(!g_equityDD.SoftPaused())
            {
             ExtExpert.NoNewEntries(true);
             g_mgBasket.AllowStack(false);
             g_equityDD.SoftPaused(true);
+            if(Inp_MaxEquityDD_RecoverClose)
+               g_equityDD.ArmRecover();
+
+            Print("EQUITY DD TRIP: dd=",DoubleToString(g_equityDD.CurrentDDPercent(),2),
+                  "% peak=",DoubleToString(g_equityDD.PeakEquity(),2),
+                  " equity=",DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+                  " limit=",DoubleToString(Inp_MaxEquityDDPercent,2),"%",
+                  (Inp_MaxEquityDD_RecoverClose
+                   ? StringFormat(" — pause; recover-close at %.0f%% (target=%.2f)",
+                                  Inp_MaxEquityDD_RecoverPct,
+                                  g_equityDD.RecoverTarget(Inp_MaxEquityDD_RecoverPct))
+                   : " — pause entries/stacks"));
            }
         }
-      else if(g_equityDD.SoftPaused())
+
+      // Soft-pause recover-close: hold open legs until RecoverPct of trip loss is back, then flatten.
+      if(g_equityDD.SoftPaused() && Inp_MaxEquityDD_RecoverClose && g_equityDD.RecoverArmed())
         {
-         // CloseAll=false: resume once DD drops back under the limit.
-         ExtExpert.NoNewEntries(Inp_NoNewEntries);
-         g_mgBasket.AllowStack(Inp_UseMartingale && Inp_MG_AllowStack);
+         g_equityDD.UpdateRecoverTrough();
+         if(g_equityDD.Recovered(Inp_MaxEquityDD_RecoverPct))
+           {
+            Print("EQUITY DD RECOVER CLOSE: recovered ",DoubleToString(Inp_MaxEquityDD_RecoverPct,0),
+                  "% of loss | peak=",DoubleToString(g_equityDD.RecoverPeak(),2),
+                  " trough=",DoubleToString(g_equityDD.RecoverTrough(),2),
+                  " equity=",DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+                  " — flatten & resume");
+            g_mgBasket.CloseAllPositions();
+            g_equityDD.ResetPeakToEquity();
+            EquityDDResumeTrading();
+           }
+        }
+      else if(!breached && g_equityDD.SoftPaused() && !Inp_MaxEquityDD_RecoverClose)
+        {
+         // CloseAll=false, no recover-close: resume once DD drops back under the limit.
+         EquityDDResumeTrading();
          g_equityDD.SoftPaused(false);
          Print("EQUITY DD RESUME: dd back under ",DoubleToString(Inp_MaxEquityDDPercent,2),"%");
         }
