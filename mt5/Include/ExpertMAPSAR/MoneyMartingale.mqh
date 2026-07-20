@@ -6,6 +6,7 @@
 
 #include <Expert\Money\MoneySizeOptimized.mqh>
 #include <Trade\DealInfo.mqh>
+#include <Trade\PositionInfo.mqh>
 
 class CMoneyMartingale : public CMoneySizeOptimized
   {
@@ -25,6 +26,42 @@ protected:
    static bool DealClosesShortBasket(const CDealInfo &deal)
      {
       return(deal.Entry()==DEAL_ENTRY_OUT && deal.DealType()==DEAL_TYPE_BUY);
+     }
+
+   // Earliest open time on this side; 0 = flat (no active cycle → streak 0).
+   datetime          ActiveCycleStart(const bool forLongBasket) const
+     {
+      if(m_symbol==NULL)
+         return(0);
+
+      CPositionInfo pos;
+      datetime      earliest=0;
+
+      for(int i=PositionsTotal()-1; i>=0; i--)
+        {
+         if(!pos.SelectByIndex(i))
+            continue;
+         if(pos.Symbol()!=m_symbol.Name())
+            continue;
+         if((ulong)pos.Magic()!=m_magic)
+            continue;
+
+         const bool isBuy=(pos.PositionType()==POSITION_TYPE_BUY);
+         if(isBuy!=forLongBasket)
+            continue;
+
+         if(earliest==0 || pos.Time()<earliest)
+            earliest=pos.Time();
+        }
+
+      return(earliest);
+     }
+
+   bool              DealInStreakWindow(const CDealInfo &deal,const datetime windowStart) const
+     {
+      if(windowStart<=0)
+         return(false);
+      return(deal.Time()>windowStart);
      }
 
    double   NormalizeLot(double lot) const
@@ -49,9 +86,15 @@ protected:
       return(lot);
      }
 
+   // Consecutive losses only inside the current open cycle.
+   // Flat book (no open positions) → always 0: next entry is a fresh base leg.
    int      CountConsecutiveLosses(const bool forLongBasket) const
      {
       if(m_symbol==NULL)
+         return(0);
+
+      const datetime windowStart=ActiveCycleStart(forLongBasket);
+      if(windowStart<=0)
          return(0);
 
       HistorySelect(0,TimeCurrent());
@@ -74,6 +117,8 @@ protected:
             continue;
          if(deal.Entry()!=DEAL_ENTRY_OUT)
             continue;
+         if(!DealInStreakWindow(deal,windowStart))
+            break;
 
          if(forLongBasket && !DealClosesLongBasket(deal))
             continue;
@@ -189,6 +234,10 @@ public:
       if(m_symbol==NULL)
          return(0.0);
 
+      const datetime windowStart=ActiveCycleStart(isBuy);
+      if(windowStart<=0)
+         return(0.0);
+
       HistorySelect(0,TimeCurrent());
 
       double    sum=0.0;
@@ -209,6 +258,8 @@ public:
             continue;
          if(deal.Entry()!=DEAL_ENTRY_OUT)
             continue;
+         if(!DealInStreakWindow(deal,windowStart))
+            break;
 
          if(isBuy && !DealClosesLongBasket(deal))
             continue;
@@ -260,6 +311,7 @@ public:
 
       if(m_use_martingale)
         {
+         // Flat → streak 0 → base lot. MG sizing only via stack while a cycle is open.
          const double lot=ApplyMartingale(baseLot,true);
          const int    steps=MathMin(CountConsecutiveLosses(true),m_martingale_max_steps);
          if(steps>0)

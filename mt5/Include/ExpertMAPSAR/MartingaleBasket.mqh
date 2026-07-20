@@ -196,7 +196,8 @@ private:
       if(adverseMove<stepDist)
          return;
 
-      const int stepIndex=m_money.LossStreak(isBuy)+posCount;
+      // Step from open legs only (flat entries are always base lot; no history streak).
+      const int stepIndex=posCount;
       const double lot=m_money.MartingaleLotForStep(stepIndex,isBuy);
       if(lot<=0.0)
          return;
