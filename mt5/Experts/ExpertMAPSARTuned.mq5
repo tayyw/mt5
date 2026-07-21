@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.29"
+#property version   "1.30"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -65,6 +65,11 @@ input group "=== Trailing PSAR ==="
 input double             Inp_Trailing_ParabolicSAR_Step    =0.014;
 input double             Inp_Trailing_ParabolicSAR_Maximum =0.18;
 
+input group "=== Churn protection ==="
+input int                Inp_ChurnCooldownBars       =8;     // Bars to block re-entry after exit (0=off)
+input bool               Inp_ChurnSameDirOnly        =true;  // Only block the side that exited
+input bool               Inp_ChurnSlExitsOnly         =true;  // Only after SL/trailing (not group-profit close)
+
 input group "=== Money ==="
 input double             Inp_Money_DecreaseFactor      =2.5;
 input double             Inp_Money_Percent             =4.0;
@@ -111,6 +116,9 @@ int OnInit(void)
    ExtExpert.AllowHedging(Inp_AllowHedging);
    ExtExpert.MartingaleGroupExits(Inp_UseMartingale && Inp_MG_GroupClose);
    ExtExpert.NoNewEntries(Inp_NoNewEntries);
+   ExtExpert.ChurnCooldownBars(Inp_ChurnCooldownBars);
+   ExtExpert.ChurnSameDirOnly(Inp_ChurnSameDirOnly);
+   ExtExpert.ChurnSlExitsOnly(Inp_ChurnSlExitsOnly);
    g_equityDD.Init(Inp_MaxEquityDDPercent);
 
    if(!ExtExpert.Init(Symbol(),Period(),Inp_EveryTick,Expert_MagicNumber))
@@ -329,7 +337,12 @@ int OnInit(void)
           ? StringFormat(" base=%.0f",Inp_Money_SizingBase)
           : ""),
          " scale=",Inp_LotScale,
-         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""));
+         (Inp_UseMartingale ? StringFormat(" | MG %.1fx",Inp_MartingaleMult) : ""),
+         (Inp_ChurnCooldownBars>0
+          ? StringFormat(" | churn %dbars%s%s",Inp_ChurnCooldownBars,
+                         (Inp_ChurnSameDirOnly ? " sameDir" : " both"),
+                         (Inp_ChurnSlExitsOnly ? " SL-only" : " anyExit"))
+          : ""));
    return(INIT_SUCCEEDED);
   }
 
@@ -424,6 +437,37 @@ void OnTick(void)
 void OnTrade(void)
   {
    ExtExpert.OnTrade();
+  }
+
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(Inp_ChurnCooldownBars<=0)
+      return;
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD || trans.deal==0)
+      return;
+   if(!HistoryDealSelect(trans.deal))
+      return;
+
+   if((ulong)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=(ulong)Expert_MagicNumber)
+      return;
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=Symbol())
+      return;
+
+   const long entry=HistoryDealGetInteger(trans.deal,DEAL_ENTRY);
+   if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)
+      return;
+
+   // DEAL_TYPE_BUY on an OUT deal closes a SELL; DEAL_TYPE_SELL closes a BUY.
+   const long dealType=HistoryDealGetInteger(trans.deal,DEAL_TYPE);
+   const bool exitedBuy=(dealType==DEAL_TYPE_SELL);
+
+   const long reason=HistoryDealGetInteger(trans.deal,DEAL_REASON);
+   const bool fromSL=(reason==DEAL_REASON_SL || reason==DEAL_REASON_SO);
+
+   ExtExpert.ArmChurnCooldown(exitedBuy,fromSL);
   }
 
 //+------------------------------------------------------------------+

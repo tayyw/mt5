@@ -18,6 +18,14 @@ private:
    bool     m_no_new_entries;   // block signal entries; MG stack/exits still run
    ulong    m_magic_number;
 
+   // Churn guard: after a trail/SL (or any) exit, block signal re-entry for N bars.
+   // Stops the common MAPSAR loop: PSAR stops leg-1 on trend flip → MA still hot → reopen poorly.
+   int      m_churn_cooldown_bars;
+   bool     m_churn_same_dir_only;
+   bool     m_churn_sl_exits_only;
+   datetime m_churn_until_buy;
+   datetime m_churn_until_sell;
+
    bool     HasSidePosition(const bool isBuy) const
      {
       CPositionInfo pos;
@@ -139,7 +147,12 @@ public:
                                            m_inverse(false),
                                            m_mg_group_exits(false),
                                            m_no_new_entries(false),
-                                           m_magic_number(0) {}
+                                           m_magic_number(0),
+                                           m_churn_cooldown_bars(0),
+                                           m_churn_same_dir_only(true),
+                                           m_churn_sl_exits_only(true),
+                                           m_churn_until_buy(0),
+                                           m_churn_until_sell(0) {}
 
    void              Configure(const bool allowLong,const bool allowShort,const ulong magic)
      {
@@ -154,8 +167,57 @@ public:
    void              InverseSignals(const bool value){ m_inverse=value; }
    void              MartingaleGroupExits(const bool value){ m_mg_group_exits=value; }
    void              NoNewEntries(const bool value)  { m_no_new_entries=value; }
+   void              ChurnCooldownBars(const int bars){ m_churn_cooldown_bars=MathMax(0,bars); }
+   void              ChurnSameDirOnly(const bool value){ m_churn_same_dir_only=value; }
+   void              ChurnSlExitsOnly(const bool value){ m_churn_sl_exits_only=value; }
    bool              AllowHedging(void) const        { return(m_allow_hedging); }
    bool              NoNewEntries(void) const        { return(m_no_new_entries); }
+   int               ChurnCooldownBars(void) const   { return(m_churn_cooldown_bars); }
+
+   // Call from OnTradeTransaction on DEAL_ENTRY_OUT for our magic.
+   // exitedBuy = position that closed was a BUY; fromSL = DEAL_REASON_SL / SO.
+   void              ArmChurnCooldown(const bool exitedBuy,const bool fromSL)
+     {
+      if(m_churn_cooldown_bars<=0)
+         return;
+      if(m_churn_sl_exits_only && !fromSL)
+         return;
+
+      const int periodSec=PeriodSeconds(m_period);
+      if(periodSec<=0)
+         return;
+
+      const datetime until=TimeCurrent()+(datetime)(periodSec*m_churn_cooldown_bars);
+
+      if(m_churn_same_dir_only)
+        {
+         if(exitedBuy)
+            m_churn_until_buy=until;
+         else
+            m_churn_until_sell=until;
+        }
+      else
+        {
+         m_churn_until_buy=until;
+         m_churn_until_sell=until;
+        }
+
+      Print("CHURN COOLDOWN: block ",
+            (m_churn_same_dir_only ? (exitedBuy ? "BUY" : "SELL") : "BOTH"),
+            " until ",TimeToString(until,TIME_DATE|TIME_SECONDS),
+            " (",m_churn_cooldown_bars," bars",
+            (fromSL ? ", SL/trail" : ", exit"),")");
+     }
+
+   bool              InChurnCooldown(const bool openingBuy) const
+     {
+      if(m_churn_cooldown_bars<=0)
+         return(false);
+      const datetime now=TimeCurrent();
+      if(openingBuy)
+         return(now<m_churn_until_buy);
+      return(now<m_churn_until_sell);
+     }
 
    // When MG group-close is on, skip signal exits so a side can stack to
    // StackMaxLegs and leave via basket recovery. Money emergency close still runs.
@@ -194,6 +256,9 @@ public:
    // existing sells, then OpenInvertedFromShortSignal kept buying every tick.
    bool              CanOpenPositionSide(const bool openingBuy) const
      {
+      if(InChurnCooldown(openingBuy))
+         return(false);
+
       if(openingBuy)
         {
          if(!m_allow_long)
