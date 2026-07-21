@@ -4,12 +4,12 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.30"
+#property version   "1.31"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
 #include <Expert\Signal\SignalRSI.mqh>
-#include <Expert\Trailing\TrailingParabolicSAR.mqh>
+#include <ExpertMAPSAR\TrailingPSARLock.mqh>
 #include <ExpertMAPSAR\ExpertMAPSAR.mqh>
 #include <ExpertMAPSAR\SignalMABalanced.mqh>
 #include <ExpertMAPSAR\MoneyMartingale.mqh>
@@ -64,6 +64,13 @@ input double             Inp_RSI_Filter_Weight       =0.25;
 input group "=== Trailing PSAR ==="
 input double             Inp_Trailing_ParabolicSAR_Step    =0.014;
 input double             Inp_Trailing_ParabolicSAR_Maximum =0.18;
+
+input group "=== Profit lock (secondary trail) ==="
+input bool               Inp_LockEnable              =true;  // Swing/ATR lock beside PSAR
+input int                Inp_LockSwingBars           =3;     // Recent bars for swing high/low
+input int                Inp_LockATRPeriod           =14;
+input double             Inp_LockATRMult             =0.35;  // Cushion beyond swing
+input double             Inp_LockStartATR            =0.80;  // Arm after floating profit >= N*ATR
 
 input group "=== Churn protection ==="
 input int                Inp_ChurnCooldownBars       =8;     // Bars to block re-entry after exit (0=off)
@@ -239,7 +246,7 @@ int OnInit(void)
         }
      }
 
-   CTrailingPSAR *trailing=new CTrailingPSAR;
+   CTrailingPSARLock *trailing=new CTrailingPSARLock;
    if(trailing==NULL)
      {
       printf(__FUNCTION__+": error creating trailing");
@@ -256,6 +263,11 @@ int OnInit(void)
 
    trailing.Step(Inp_Trailing_ParabolicSAR_Step);
    trailing.Maximum(Inp_Trailing_ParabolicSAR_Maximum);
+   trailing.LockEnable(Inp_LockEnable);
+   trailing.SwingBars(Inp_LockSwingBars);
+   trailing.ATRPeriod(Inp_LockATRPeriod);
+   trailing.ATRMult(Inp_LockATRMult);
+   trailing.LockStartATR(Inp_LockStartATR);
 
    if(!trailing.ValidationSettings())
      {
@@ -342,6 +354,10 @@ int OnInit(void)
           ? StringFormat(" | churn %dbars%s%s",Inp_ChurnCooldownBars,
                          (Inp_ChurnSameDirOnly ? " sameDir" : " both"),
                          (Inp_ChurnSlExitsOnly ? " SL-only" : " anyExit"))
+          : ""),
+         (Inp_LockEnable
+          ? StringFormat(" | lock swing=%d atr=%.2f start=%.2fATR",
+                         Inp_LockSwingBars,Inp_LockATRMult,Inp_LockStartATR)
           : ""));
    return(INIT_SUCCEEDED);
   }
