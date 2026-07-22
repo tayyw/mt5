@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.31"
+#property version   "1.32"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -76,6 +76,11 @@ input group "=== Churn protection ==="
 input int                Inp_ChurnCooldownBars       =8;     // Bars to block re-entry after exit (0=off)
 input bool               Inp_ChurnSameDirOnly        =true;  // Only block the side that exited
 input bool               Inp_ChurnSlExitsOnly         =true;  // Only after SL/trailing (not group-profit close)
+
+input group "=== No-chase (extension filter) ==="
+input bool               Inp_NoChase                 =true;  // Block entries already stretched from MA
+input int                Inp_NoChaseATRPeriod        =14;
+input double             Inp_NoChaseATRMult          =1.0;   // Max |price-MA| in ATR (long above / short below)
 
 input group "=== Money ==="
 input double             Inp_Money_DecreaseFactor      =2.5;
@@ -153,6 +158,9 @@ int OnInit(void)
    signal.ThresholdOpen(Inp_ThresholdOpen);
    signal.ThresholdOpenShort(Inp_ThresholdOpenShort);
    signal.ThresholdClose(Inp_ThresholdClose);
+   signal.NoChase(Inp_NoChase);
+   signal.NoChaseATRPeriod(Inp_NoChaseATRPeriod);
+   signal.NoChaseATRMult(Inp_NoChaseATRMult);
 
    signal.PeriodMA(Inp_Signal_MA_Period);
    signal.Shift(Inp_Signal_MA_Shift);
@@ -358,6 +366,9 @@ int OnInit(void)
          (Inp_LockEnable
           ? StringFormat(" | lock swing=%d atr=%.2f start=%.2fATR",
                          Inp_LockSwingBars,Inp_LockATRMult,Inp_LockStartATR)
+          : ""),
+         (Inp_NoChase
+          ? StringFormat(" | noChase %.2fATR",Inp_NoChaseATRMult)
           : ""));
    return(INIT_SUCCEEDED);
   }
