@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "MT5 MAPSAR Tuned"
 #property link      "https://www.mql5.com"
-#property version   "1.32"
+#property version   "1.36"
 #property description "MA+PSAR tuned + martingale stack, group exit, hedging baskets"
 
 #include <Expert\Signal\SignalITF.mqh>
@@ -53,8 +53,8 @@ input group "=== Session & spread ==="
 input bool               Inp_UseSessionFilter        =true;
 input int                Inp_SessionStartHour        =7;
 input int                Inp_SessionEndHour            =20;
-input bool               Inp_UseSpreadFilter         =true;
-input int                Inp_MaxSpreadPoints         =18;
+input bool               Inp_UseSpreadFilter         =true;  // Signal entries only
+input int                Inp_MaxSpreadPoints         =18;    // Symbol points (any pair) — signal + always-on MG stack cap LONG/SHORT
 
 input group "=== RSI momentum filter ==="
 input bool               Inp_UseRSIFilter            =true;
@@ -103,7 +103,7 @@ input bool               Inp_MG_GroupClose             =true;
 input double             Inp_MG_GroupMinProfit         =0.0;
 input bool               Inp_MG_AllowStack             =true;
 input int                Inp_MG_StackMaxLegs           =4;
-input int                Inp_MG_StackStepPoints        =120;
+input int                Inp_MG_StackStepPoints        =120;  // Adverse move in symbol points before next MG leg (any pair)
 
 //+------------------------------------------------------------------+
 //| Globals                                                          |
@@ -308,10 +308,13 @@ int OnInit(void)
    g_money.MartingaleMult(Inp_MartingaleMult);
    g_money.MartingaleMaxSteps(Inp_MartingaleMaxSteps);
 
+   // Stack spread cap is always on for LONG and SHORT (independent of Inp_UseSpreadFilter).
+   // Inp_MaxSpreadPoints<=0 falls back to MG_STACK_SPREAD_CAP_DEFAULT (18) inside Init.
    g_mgBasket.Init(Symbol(),Expert_MagicNumber,Period(),g_money,
                    Inp_UseMartingale && Inp_MG_GroupClose,
                    Inp_UseMartingale && Inp_MG_AllowStack,
-                   Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints);
+                   Inp_MG_GroupMinProfit,Inp_MG_StackMaxLegs,Inp_MG_StackStepPoints,
+                   Inp_MaxSpreadPoints);
 
    if(!g_money.ValidationSettings())
      {
